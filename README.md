@@ -2,13 +2,14 @@
 
 # djctools
 
-`djctools` is a package designed to simplify logging and loss management for deep learning models, specifically focusing on multi-GPU training and nested module structures. It includes a wrapper for [Weights & Biases (wandb)](https://wandb.ai/) logging and custom logging-capable PyTorch modules, such as `LoggingModule` and `LossModule`, allowing fine-grained control over logging and modular loss calculation within complex model hierarchies.
+`djctools` is a package designed to simplify logging, loss management, and multi-GPU training for deep learning models, specifically focusing on nested module structures and irregular data handling. It includes a wrapper for [Weights & Biases (wandb)](https://wandb.ai/) logging and custom logging-capable PyTorch modules, such as `LoggingModule` and `LossModule`, allowing fine-grained control over logging and modular loss calculation within complex model hierarchies. Additionally, it provides a `Trainer` class to facilitate manual data parallelism with irregular data across multiple GPUs, explicitly designed to work seamlessly with the [djcdata data loader](https://github.com/jkiesele/djcdata/blob/master/src/djcdata/torch_interface.py).
 
 ## Features
 
 - Singleton wrapper around `wandb` for controlled logging across models.
 - `LoggingModule` class with integrated logging capabilities that can be toggled on or off at different levels in the model.
 - `LossModule` class for modular and toggled loss calculation, with built-in support for aggregation across multiple loss terms.
+- `Trainer` class for manual data parallelism, supporting irregular data and custom data loaders, including compatibility with the `djcdata` data loader.
 - Batch logging with buffered flushing to optimize performance.
 
 ---
@@ -162,3 +163,109 @@ LossModule.clear_all_losses(model)
 - **Read-Only `is_loss_active` Property**: This property provides information on whether a given `LossModule` instance is currently set to compute losses.
 
 This setup provides a comprehensive structure for handling multiple loss terms in deep learning models, supporting modular loss calculation, efficient toggling, and aggregated loss management for complex architectures.
+
+---
+
+## Trainer
+
+The `Trainer` class is designed to facilitate manual data parallelism across multiple GPUs, especially when dealing with irregular data or custom data loaders that are not compatible with PyTorch's built-in data parallelism utilities. It allows you to distribute your model and data across multiple GPUs, perform parallel computations, and manage gradient averaging and model synchronization.
+
+### Key Features
+
+- **Manual Data Parallelism**: Distributes data and model computations manually across multiple GPUs.
+- **Irregular Data Handling**: Supports data loaders that yield irregular or variable-sized batches.
+- **Compatibility with djcdata Data Loader**: Explicitly designed to work seamlessly with the [`djcdata` data loader](https://github.com/jkiesele/djcdata/blob/master/src/djcdata/torch_interface.py), facilitating efficient training with datasets that produce lists of dictionaries or tensors.
+- **Custom Model Integration**: Works with any `torch.nn.Module`, including those using `LossModule` instances.
+- **Gradient Averaging**: Averages gradients from all GPUs before performing the optimization step.
+- **Model Synchronization**: Synchronizes model weights across all GPUs after each update.
+- **Logging Control**: Only enables logging on the main model to prevent redundant logging entries.
+
+### Integration with djcdata Data Loader
+
+The `Trainer` class is explicitly designed to work well with the `djcdata` data loader, which yields data as lists of dictionaries or tensors. This compatibility ensures seamless data handling and efficient training when using the `djcdata` framework for loading and preprocessing your datasets.
+
+- **Data Format**: The `DJCDataLoader` returns data as a list of tensors or a list of dictionaries. Importantly, the length of the list is **not** the batch size; instead, it represents the number of inputs to the model (e.g., a dictionary for features and a dictionary for truth quantities). This structure facilitates the use of `LossModule` instances.
+- **Other DataLoaders**: It is not required to use the DJCDataloader from the djcdata package as long as the data loader returns a list of dictionaries or a list of tensors - emphasis is on the list.
+
+### Model Requirements
+
+Your model should:
+
+- Define a `forward` method that accepts data in the format provided by the `djcdata` data loader (typically a list of dictionaries or tensors).
+- Use `LossModule` instances to compute and store losses during the forward pass.
+
+### Training and Validation Methods
+
+#### `train_loop(train_loader)`
+
+Runs the training loop. Note that the `Trainer` functions have been updated, and there is no longer an `epoch` parameter in the training function.
+
+- **Parameters**:
+  - `train_loader`: Data loader for the training data, compatible with `djcdata`.
+
+#### `validate_loop(val_loader)`
+
+Runs the validation loop.
+
+- **Parameters**:
+  - `val_loader`: Data loader for the validation data, compatible with `djcdata`.
+
+### Basic Usage
+
+```python
+from djctools.trainer import Trainer
+from djcdata.torch_interface import DJCDataLoader
+
+# Define your model using LossModule
+class CustomModel(nn.Module):
+    def __init__(self):
+        super(CustomModel, self).__init__()
+        self.loss_module = CustomLossModule(is_logging_module=True)
+    
+    def forward(self, data):
+        self.loss_module(data)
+
+# Initialize model and optimizer
+model = CustomModel()
+optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
+
+# Initialize the Trainer
+trainer = Trainer(model, optimizer, num_gpus=2)
+
+# Create data loaders using djcdata
+train_loader = DJCDataLoader(data_path='path/to/train_data.djcdc', batch_size=32, shuffle=True)
+val_loader = DJCDataLoader(data_path='path/to/val_data.djcdc', batch_size=32)
+
+# Training loop
+for epoch in range(num_epochs):
+    print(f"Starting epoch {epoch+1}")
+    trainer.train_loop(train_loader)
+    trainer.validate_loop(val_loader)
+```
+
+### Data Handling in the Trainer
+
+- **Data Format**: The `Trainer` expects the data loader to return a list of tensors or a list of dictionaries. The list's length is **not** the batch size but corresponds to the number of inputs to the model.
+- **Data Distribution**: The `Trainer` fetches separate batches for each GPU and moves the data to the appropriate device.
+- **Data Moving Function**: The `_data_to_device` method in the `Trainer` is designed to handle the data format provided by the `djcdata` data loader.
+
+### Important Notes
+
+- **Trainer Function Updates**: The `Trainer` functions have been updated to reflect the latest changes:
+  - `def train_loop(self, train_loader)`
+  - `def validate_loop(self, val_loader)`
+- **Assumption of Similar Batch Sizes**: The `Trainer` assumes that batches across GPUs are similar in size. If there's significant variation, you might need to adjust the gradient averaging method to weight gradients appropriately.
+- **Data List Dimension**: The list dimension in the data returned by the data loader is not the batch size but represents the number of inputs to the model.
+- **LossModule Integration**: The data format facilitates the use of `LossModule` instances, allowing for modular loss computation.
+
+### Customization
+
+- **Adjusting Data Handling**: If your data loader provides data in a different format, you may need to adjust the `_data_to_device` method in the `Trainer` class to accommodate your data structure.
+- **Error Handling**: Implement additional error handling as needed for your specific use case.
+- **Extensibility**: The `Trainer` can be extended with additional features such as learning rate schedulers, checkpointing, early stopping, etc.
+
+### Limitations
+
+- **Communication Overhead**: Manually aggregating gradients and synchronizing models can introduce overhead compared to using PyTorch's built-in `DistributedDataParallel` (DDP). For large-scale applications, consider using DDP.
+- **Single Data Loader Iteration**: The `Trainer` fetches data for each GPU by iterating over the data loader multiple times. Ensure that your data loader can handle multiple concurrent iterations if necessary.
+
