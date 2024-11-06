@@ -1,5 +1,6 @@
 import unittest
-from djctools.wandb_tools import wandb_wrapper, LoggingModule
+from djctools.module_extensions import LoggingModule
+from djctools.wandb_tools import wandb_wrapper
 
 
 class TestLoggingModule(unittest.TestCase):
