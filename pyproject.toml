@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "djctools"
+version = "0.1.0"
+description = "A package for multi-GPU model training, logging etc. Follows the core ideas of DeepJetCore but in torch."
+authors = [
+    { name = "Your Name", email = "jan.kieseler@cern.ch" }
+]
+license = { text = "MIT" }
+readme = "README.md"
+requires-python = ">=3.7"
+dependencies = [
+    "numpy",
+    "wandb",
+    "torch"
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
