@@ -2,12 +2,13 @@
 
 # djctools
 
-`djctools` is a package designed to simplify logging for deep learning models, specifically focusing on multi-GPU training and nested module structures. It includes a wrapper for [Weights & Biases (wandb)](https://wandb.ai/) logging and custom logging-capable PyTorch modules that allow fine-grained control over logging within complex model hierarchies.
+`djctools` is a package designed to simplify logging and loss management for deep learning models, specifically focusing on multi-GPU training and nested module structures. It includes a wrapper for [Weights & Biases (wandb)](https://wandb.ai/) logging and custom logging-capable PyTorch modules, such as `LoggingModule` and `LossModule`, allowing fine-grained control over logging and modular loss calculation within complex model hierarchies.
 
 ## Features
 
 - Singleton wrapper around `wandb` for controlled logging across models.
 - `LoggingModule` class with integrated logging capabilities that can be toggled on or off at different levels in the model.
+- `LossModule` class for modular and toggled loss calculation, with built-in support for aggregation across multiple loss terms.
 - Batch logging with buffered flushing to optimize performance.
 
 ---
@@ -65,7 +66,7 @@ When the key is found, it is automatically set in the environment for `wandb` to
 ### Basic Usage
 
 ```python
-from djctools.wandb_tools import LoggingModule
+from djctools.module_extensions import LoggingModule
 
 # Create a logging-enabled module
 module = LoggingModule(is_logging_module=True)
@@ -101,4 +102,63 @@ LoggingModule.switch_all_logging(MyModel(), enable_logging=True)
 - **Logging Prefixes**: Each `LoggingModule` instance prefixes metrics with its name, which is particularly useful for identifying metrics in nested structures.
 - **Static Method for Global Logging Control**: The `switch_all_logging` static method allows toggling logging on or off for all `LoggingModule` instances within any `torch.nn.Module` hierarchy.
 
-This setup simplifies managing logging across different levels in deep learning models, allowing efficient, organized, and scalable logging for large models.
+---
+
+## LossModule
+
+`LossModule` is a subclass of `LoggingModule` that adds functionality for computing, recording, and aggregating loss terms within a model. Each `LossModule` can store its own computed losses, which can later be aggregated across multiple instances within a model. It provides toggling functionality for enabling or disabling specific loss terms, allowing for modular and customizable loss calculations.
+
+### Basic Usage
+
+```python
+from djctools.module_extensions import LossModule
+
+# Define a custom loss by subclassing LossModule
+class MyCustomLoss(LossModule):
+    def compute_loss(self, predictions, targets):
+        # Define a specific loss computation, e.g., Mean Squared Error
+        return torch.nn.functional.mse_loss(predictions, targets)
+
+# Use the custom loss in a model
+model = torch.nn.Module()
+model.loss_layer = MyCustomLoss(is_logging_module=True, is_loss_active=True)
+
+# Forward pass with loss calculation
+predictions = torch.randn(10, 5)
+targets = torch.randn(10, 5)
+model.loss_layer(predictions, targets)
+```
+
+### Toggling Loss Calculation
+
+You can enable or disable loss calculation for each `LossModule` instance or for all instances within a model. Disabling a loss module bypasses its computation, making it efficient for experiments where only selected loss terms are needed.
+
+```python
+# Disable loss calculation
+model.loss_layer.switch_loss_calculation(False)
+assert not model.loss_layer.is_loss_active
+
+# Enable loss calculation
+model.loss_layer.switch_loss_calculation(True)
+assert model.loss_layer.is_loss_active
+```
+
+### Aggregating Losses
+
+`LossModule` provides static methods to sum and clear all accumulated losses across `LossModule` instances within a model:
+
+```python
+# Sum all losses across LossModule instances
+total_loss = LossModule.sum_all_losses(model)
+
+# Clear losses after an optimization step
+LossModule.clear_all_losses(model)
+```
+
+### Additional Features
+
+- **Instance-Level Loss Storage**: Each `LossModule` instance stores its own computed losses, enabling flexible and modular loss management.
+- **Static Methods for Global Loss Control**: The `switch_all_losses`, `sum_all_losses`, and `clear_all_losses` methods allow for global management of loss calculations across a model.
+- **Read-Only `is_loss_active` Property**: This property provides information on whether a given `LossModule` instance is currently set to compute losses.
+
+This setup provides a comprehensive structure for handling multiple loss terms in deep learning models, supporting modular loss calculation, efficient toggling, and aggregated loss management for complex architectures.
