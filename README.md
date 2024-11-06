@@ -1,6 +1,4 @@
-Certainly! Here’s a README section describing the `wandb_wrapper` and `LoggingModule` functionalities as they currently stand. This can be expanded as more features are added.
 
----
 
 # djctools
 
@@ -104,7 +102,3 @@ LoggingModule.switch_all_logging(MyModel(), enable_logging=True)
 - **Static Method for Global Logging Control**: The `switch_all_logging` static method allows toggling logging on or off for all `LoggingModule` instances within any `torch.nn.Module` hierarchy.
 
 This setup simplifies managing logging across different levels in deep learning models, allowing efficient, organized, and scalable logging for large models.
-
---- 
-
-This section of the README provides a clear overview of the current features and usage of `wandb_wrapper` and `LoggingModule`. It can be expanded as you add more functionality. Let me know if there's anything more you’d like to include!
