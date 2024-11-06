@@ -209,3 +209,18 @@ class LoggingModule(torch.nn.Module):
         for child in self.children():
             if isinstance(child, LoggingModule):
                 child.switch_logging(enable_logging)
+
+
+    @staticmethod
+    def switch_all_logging(module, enable_logging):
+        """
+        Searches through a given torch.nn.Module and applies switch_logging to any
+        LoggingModule submodules found, enabling or disabling logging as specified.
+
+        Args:
+            module (torch.nn.Module): The module to search through.
+            enable_logging (bool): True to enable logging, False to disable it.
+        """
+        for child in module.modules():
+            if isinstance(child, LoggingModule):
+                child.switch_logging(enable_logging)
