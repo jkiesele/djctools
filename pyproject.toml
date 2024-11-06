@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "djctools"
 version = "0.1.0"
-description = "A package for multi-GPU model training, logging etc. Follows the core ideas of DeepJetCore but in torch."
+description = "A package for logging, loss management, and multi-GPU training. Follows the core ideas of DeepJetCore but in torch."
 authors = [
     { name = "Your Name", email = "jan.kieseler@cern.ch" }
 ]
@@ -15,7 +15,8 @@ requires-python = ">=3.7"
 dependencies = [
     "numpy",
     "wandb",
-    "torch"
+    "torch",
+    # "djcdata @ git+https://github.com/jkiesele/djcdata.git",  #still considering it optional
 ]
 classifiers = [
     "Programming Language :: Python :: 3",
@@ -25,3 +26,5 @@ classifiers = [
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+
