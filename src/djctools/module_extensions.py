@@ -193,11 +193,13 @@ class LossModule(LoggingModule):
         Returns:
             torch.Tensor: The sum of all accumulated losses from LossModule instances.
         """
-        total_loss = torch.tensor(0.0, requires_grad=True)
+        device = next(module.parameters()).device
+        total_loss = torch.tensor(0.0, requires_grad=True).to(device)
+        
         for child in module.modules():
             if isinstance(child, LossModule):
                 if child._losses:
-                    total_loss = total_loss + sum(child._losses)
+                    total_loss = total_loss + sum([l.to(device) for l in child._losses])
         return total_loss
     
     @staticmethod

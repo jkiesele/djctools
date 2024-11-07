@@ -24,7 +24,10 @@ class SimpleModel(torch.nn.Module):
     """A simple model for testing purposes, inheriting LossModule."""
     def __init__(self):
         super(SimpleModel, self).__init__()
-        self.fc = nn.Linear(10, 1)
+        self.fc = nn.Sequential(
+            nn.Linear(10, 1)
+        )
+        
         self.loss = SimpleLossModule(logging_active=True, name="SimpleLossModule")
         self.triple_input = False
 
@@ -33,7 +36,6 @@ class SimpleModel(torch.nn.Module):
             x, target = data['inputs'], data['targets']
         else:
             # this is following the TrainData_mock definition in djcdata
-            print(data)
             x, target = data[0]["features_ragged"], data[1]["truth_ragged"]
         x = self.fc(x)
         self.loss(x, target)
@@ -57,18 +59,29 @@ class DummyDataLoader:
             raise StopIteration
         self.current_batch += 1
         inputs = torch.randn(self.batch_size, 10)
-        targets = torch.randn(self.batch_size, 1)
+        targets = torch.randn(self.batch_size, 1)*0.1 + inputs.sum(dim=1, keepdim=True)
         return {'inputs': inputs, 'targets': targets}
 
 
 class TestTrainer(unittest.TestCase):
+
+    @classmethod
+    def setUpClass(cls):
+        # Setup required to ensure only one instance runs at a time
+        print("Setting up sequential class resources")
+
+    @classmethod
+    def tearDownClass(cls):
+        # Teardown actions
+        print("Tearing down sequential class resources")
+
     def _setUp(self, num_gpus):
         """Set up the model, optimizer, and trainer for each test."""
         self.model = SimpleModel()
         self.optimizer = optim.SGD(self.model.parameters(), lr=0.01)
         self.trainer = Trainer(model=self.model, optimizer=self.optimizer, num_gpus=num_gpus, verbose_level=1)  # Use CPU for testing
-        self.train_loader = DummyDataLoader(num_batches=5, batch_size=8)
-        self.val_loader = DummyDataLoader(num_batches=3, batch_size=8)
+        self.train_loader = DummyDataLoader(num_batches=500, batch_size=1024)
+        self.val_loader = DummyDataLoader(num_batches=300, batch_size=1024)
         wandb_wrapper.activate()  # Activate wandb for testing, don't initialise the connection though
 
     def test_initialization(self):
@@ -101,7 +114,7 @@ class TestTrainer(unittest.TestCase):
         self.trainer.val_loop(self.val_loader)
         self.trainer.val_loop(self.val_loader)
 
-    def test_multi_gpu_validation_loop(self):
+    def test_multi_gpu_validation(self):
         self._setUp(num_gpus=3)
         """Test validation loop execution and logging of validation losses."""
         self.trainer.val_loop(self.val_loader)
@@ -124,17 +137,29 @@ class TestTrainer(unittest.TestCase):
             self.assertTrue(torch.equal(param1, param2))
 
 
-    #if djcdata is installed, test the data loading with DJCDataLoader
-    @unittest.skipIf(not djcdata_available, "djcdata not available")
-    def test_with_djcdata(self):
-        self._setUp(num_gpus=3)
+    def do_test_with_djcdata(self, num_gpus):
+        self._setUp(num_gpus=num_gpus)
         #overwrite the data loaders
+        from djcdata import TrainDataGenerator
+        TrainDataGenerator.debuglevel = 3
         from djcdata.torch_interface import MockDJCDataLoader
-        train_loader = MockDJCDataLoader(batch_size=32)
+        train_loader = MockDJCDataLoader(batch_size=1500, dict_output=True)
         self.model.triple_input = True #make the model compatible in a simple way
 
         self.trainer.train_loop(train_loader)
 
+    
+    @unittest.skipIf(not djcdata_available, "djcdata not available")
+    def test_with_djcdata_single_cpu(self):
+        self.do_test_with_djcdata(0)
+
+    @unittest.skipIf(not djcdata_available, "djcdata not available")
+    def test_with_djcdata_single_gpu(self):
+        self.do_test_with_djcdata(1)
+
+    @unittest.skipIf(not djcdata_available, "djcdata not available")
+    def test_with_djcdata_multi_gpu(self):
+        self.do_test_with_djcdata(3)
 
     def tearDown(self):
         """Clean up any files created during testing."""

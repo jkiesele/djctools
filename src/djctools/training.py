@@ -5,6 +5,52 @@ from .module_extensions import LossModule
 from .wandb_tools import wandb_wrapper
 import numpy as np
 import os
+from torch.nn import DataParallel
+
+from typing import Any, Dict, Optional, Sequence, Tuple, Union
+
+class CustomDataParallel(DataParallel):
+    def scatter(
+        self,
+        inputs: list,
+        kwargs: Optional[Dict[str, Any]],
+        device_ids: Sequence[Union[int, torch.device]],
+    ) -> Any:
+        """
+        Custom scatter method that handles the input structures provided by the Trainer class,
+        such as lists of dictionaries or lists of lists of tensors.
+        
+        Args:
+            inputs (Tuple[Any, ...]): The input to be scattered - here this is a tuple with one entry. 
+                                      The latter entry is the list mentioned above.
+            kwargs (Optional[Dict[str, Any]]): Keyword arguments.
+            device_ids (Sequence[Union[int, torch.device]]): Target devices.
+
+        Returns:
+            Tuple of scattered inputs and kwargs for each device.
+        """
+        # Implement custom logic to split `inputs` and `kwargs` based on your structure.
+        # Example: if inputs is a list of dicts, scatter each dict entry to the devices.
+        
+        # Example pseudo-code:
+        scattered_inputs = []
+        scattered_kwargs = []
+        #print('inputs len',len(inputs))
+        #print('inputs types',[type(i) for i in inputs])
+        ##nested
+        #print('inputs[0]',[type(i) for i in inputs[0]])
+
+        for i, device_id in enumerate(device_ids):
+            # Create device-specific slices of the input.
+            device_input = [ inputs[0][i] ] #wrap in one extra list as in apply_parallel the list is unpacked for some reason, so to mitigate this, we have to wrap it in another list
+            device_kwargs = kwargs
+            
+            scattered_inputs.append(device_input)  # Convert to tuple if needed by forward.
+            scattered_kwargs.append(device_kwargs)
+        
+        return scattered_inputs, tuple(scattered_kwargs)
+
+
 
 class Trainer:
     """
@@ -77,24 +123,21 @@ class Trainer:
         # Initialize distributed process group
         self.num_gpus = num_gpus
         if torch.cuda.is_available() and num_gpus > 0:
-            # Set up environment for single-process DDP
-            os.environ["MASTER_ADDR"] = "localhost"
-            os.environ["MASTER_PORT"] = "12355"  # Use a unique port number
-            os.environ["WORLD_SIZE"] = "1"
-            os.environ["RANK"] = "0"
-
-            dist.init_process_group(backend="nccl")
+            # Set up gpu
             self.device_ids = device_ids if device_ids is not None else list(range(num_gpus))
             self.device = f'cuda:{self.device_ids[0]}'
+            self.devices = [f'cuda:{device_id}' for device_id in self.device_ids]
         else:
             # Fall back to CPU if no GPU available or num_gpus is 1
             self.device = 'cpu'
+            self.devices = ['cpu']
+            self.device_ids = []
             self.num_gpus = 0
             print("Warning: CUDA not available or num_gpus=0. Using CPU.")
 
         # Move model to device and wrap with DDP
         model.to(self.device)
-        self.model = DDP(model, device_ids=self.device_ids) if self.num_gpus > 1 else model
+        self.model = CustomDataParallel(model, device_ids=self.device_ids) if len(self.device_ids) > 1 else model
         self.optimizer = optimizer
         self.verbose_level = verbose_level
 
@@ -131,13 +174,10 @@ class Trainer:
             List of batches moved to each device.
         """
         batches = []
-        for i in range(self.num_gpus):
+        for d in self.devices:
             try:
                 data = next(data_iterator)
-                if self.num_gpus > 0:
-                    data = self._data_to_device(data, f'cuda:{self.device_ids[i]}')
-                else:
-                    data = self._data_to_device(data, 'cpu')
+                data = self._data_to_device(data, d)
                 batches.append(data)
             except StopIteration:
                 return []  # End of data
@@ -160,24 +200,20 @@ class Trainer:
             if not batches:
                 break  # End of epoch
 
-            losses = []
-            # Forward and backward pass on each device
-            for data_i in batches:
-                LossModule.clear_all_losses(self.model)
-                output = self.model(data_i)
-                loss = LossModule.sum_all_losses(self.model)
-                losses.append(loss)
+            if len(batches) == 1:
+                batches = batches[0]
 
-            # Backward and step
-            for loss in losses:
-                loss.backward()
+            outputs = self.model(batches)  # DataParallel handles passing data to each GPU
+            loss = LossModule.sum_all_losses(self.model)
+
+            loss.backward()
             self.optimizer.step()
+            LossModule.clear_all_losses(self.model)
 
             # Logging and printing
-            total_loss = np.mean([loss.item() for loss in losses]) 
-            wandb_wrapper.log("total_loss", total_loss)
+            wandb_wrapper.log("total_loss", loss.item())
             if self.verbose_level > 0 and batch_idx % 10 == 0:
-                print(f'Batch {batch_idx}: Loss {total_loss}')
+                print(f'Batch {batch_idx}: Loss {loss.item()}')
             batch_idx += 1
             wandb_wrapper.flush()
 
@@ -196,22 +232,21 @@ class Trainer:
             while True:
                 batches = self.create_batches(data_iterator)
                 if not batches:
-                    break  # End of data
-
-                losses = []
-                for data_i in batches:
-                    LossModule.clear_all_losses(self.model)
-                    output = self.model(data_i)
-                    loss = LossModule.sum_all_losses(self.model)
-                    losses.append(loss)
-
-                # Average the losses
-                total_loss = np.mean([loss.item() for loss in losses]) 
-                wandb_wrapper.log("val_total_loss", total_loss)
+                    break  # End of epoch
+                if len(batches) == 1: #no multi gpu
+                    batches = batches[0]
+    
+                outputs = self.model(batches)  # DataParallel handles passing data to each GPU
+                loss = LossModule.sum_all_losses(self.model)
+                LossModule.clear_all_losses(self.model)
+    
+                # Logging and printing
+                wandb_wrapper.log("total_loss", loss.item())
                 if self.verbose_level > 0 and batch_idx % 10 == 0:
-                    print(f'Validation Batch {batch_idx}: Loss {total_loss}')
+                    print(f'Validation Batch {batch_idx}: Loss {loss.item()}')
                 batch_idx += 1
-                wandb_wrapper.flush("val_")
+                wandb_wrapper.flush(prefix="val_")
+
 
     def save_model(self, filepath):
         """Saves the model weights to a file."""
