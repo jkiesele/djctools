@@ -14,8 +14,8 @@ class LossModuleTest(unittest.TestCase):
     def setUp(self):
         """Set up a model with two loss modules for testing."""
         self.model = torch.nn.Module()
-        self.model.loss1 = TestLossModule(is_logging_module=False, is_loss_active=True)
-        self.model.loss2 = TestLossModule(is_logging_module=False, is_loss_active=True)
+        self.model.loss1 = TestLossModule(is_logging_module=False, loss_active=True)
+        self.model.loss2 = TestLossModule(is_logging_module=False, loss_active=True)
     
     def test_loss_computation_and_storage(self):
         """Test that losses are computed and stored in the loss list."""
@@ -37,7 +37,7 @@ class LossModuleTest(unittest.TestCase):
 
         # Disable loss calculation for loss1
         self.model.loss1.switch_loss_calculation(False)
-        self.assertFalse(self.model.loss1.is_loss_active)
+        self.assertFalse(self.model.loss1.loss_active)
 
         # Compute losses
         self.model.loss1(predictions, targets)
@@ -49,7 +49,7 @@ class LossModuleTest(unittest.TestCase):
 
         # Re-enable loss calculation and verify
         self.model.loss1.switch_loss_calculation(True)
-        self.assertTrue(self.model.loss1.is_loss_active)
+        self.assertTrue(self.model.loss1.loss_active)
         self.model.loss1(predictions, targets)
         self.assertEqual(len(self.model.loss1._losses), 1)
 
@@ -90,20 +90,20 @@ class LossModuleTest(unittest.TestCase):
         self.assertEqual(len(self.model.loss1._losses), 0)
         self.assertEqual(len(self.model.loss2._losses), 0)
 
-    def test_is_loss_active_property(self):
-        """Test that the is_loss_active property correctly reflects the module's active state."""
+    def test_loss_active_property(self):
+        """Test that the loss_active property correctly reflects the module's active state."""
         # Initially active
-        self.assertTrue(self.model.loss1.is_loss_active)
-        self.assertTrue(self.model.loss2.is_loss_active)
+        self.assertTrue(self.model.loss1.loss_active)
+        self.assertTrue(self.model.loss2.loss_active)
 
         # Disable loss calculation for loss1 and verify
         self.model.loss1.switch_loss_calculation(False)
-        self.assertFalse(self.model.loss1.is_loss_active)
-        self.assertTrue(self.model.loss2.is_loss_active)
+        self.assertFalse(self.model.loss1.loss_active)
+        self.assertTrue(self.model.loss2.loss_active)
 
         # Re-enable and verify
         self.model.loss1.switch_loss_calculation(True)
-        self.assertTrue(self.model.loss1.is_loss_active)
+        self.assertTrue(self.model.loss1.loss_active)
 
 
 if __name__ == "__main__":

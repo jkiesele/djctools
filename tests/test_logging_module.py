@@ -26,20 +26,20 @@ class TestLoggingModule(unittest.TestCase):
 
     def test_logging_enabled(self):
         """Test that metrics are logged when logging is enabled."""
-        module = LoggingModule(is_logging_module=True)
+        module = LoggingModule(logging_active=True)
         module.log("test_metric", 42)
         self.assertIn("LoggingModule1_test_metric", wandb_wrapper.log_buffer)
         self.assertEqual(wandb_wrapper.log_buffer["LoggingModule1_test_metric"], 42)
 
     def test_logging_disabled(self):
         """Test that metrics are not logged when logging is disabled."""
-        module = LoggingModule(is_logging_module=False)
+        module = LoggingModule(logging_active=False)
         module.log("test_metric", 42)
         self.assertNotIn("LoggingModule1_test_metric", wandb_wrapper.log_buffer)
 
     def test_switch_logging(self):
         """Test that switch_logging properly toggles logging on and off."""
-        module = LoggingModule(is_logging_module=False)
+        module = LoggingModule(logging_active=False)
         module.switch_logging(True)
         module.log("test_metric_on", 1)
         self.assertIn("LoggingModule1_test_metric_on", wandb_wrapper.log_buffer)
@@ -51,8 +51,8 @@ class TestLoggingModule(unittest.TestCase):
 
     def test_nested_module_logging(self):
         """Test that nested modules respect the logging state of the parent."""
-        parent_module = LoggingModule(is_logging_module=True)
-        child_module = LoggingModule(is_logging_module=True)
+        parent_module = LoggingModule(logging_active=True)
+        child_module = LoggingModule(logging_active=True)
         parent_module.add_module("child", child_module)
 
         # Log a metric in the parent and child modules
@@ -67,8 +67,8 @@ class TestLoggingModule(unittest.TestCase):
 
     def test_switch_logging_in_nested_module(self):
         """Test that switch_logging propagates to nested modules."""
-        parent_module = LoggingModule(is_logging_module=True)
-        child_module = LoggingModule(is_logging_module=True)
+        parent_module = LoggingModule(logging_active=True)
+        child_module = LoggingModule(logging_active=True)
         parent_module.add_module("child", child_module)
 
         # Disable logging in the parent; child should also stop logging

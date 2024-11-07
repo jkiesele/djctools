@@ -38,7 +38,7 @@ class MNISTLossModule(LossModule):
 class MNISTModel(nn.Module):
     def __init__(self):
         super(MNISTModel, self).__init__()
-        self.loss_module = MNISTLossModule(is_logging_module=True, name="MNISTLossModule")
+        self.loss_module = MNISTLossModule(logging_active=True, name="MNISTLossModule")
         
         self.conv1 = nn.Conv2d(1, 32, kernel_size=3, stride=1, padding=1)
         self.relu1 = nn.ReLU()
@@ -61,6 +61,8 @@ class MNISTModel(nn.Module):
 
 def main():
 
+    # wandb_wrapper.deactivate()  # Deactivate wandb for testing
+    
     # Initialize wandb through the wandb_wrapper
     wandb_wrapper.init(project="mnist_trainer_example")
 
