@@ -5,7 +5,7 @@ from .wandb_tools import wandb_wrapper
 
 
 class Trainer:
-    def __init__(self, model, optimizer, num_gpus=1, device_ids=None):
+    def __init__(self, model, optimizer, num_gpus=1, device_ids=None, verbose_level=0):
         """
         Initializes the Trainer for manual data parallelism.
 
@@ -43,6 +43,7 @@ class Trainer:
 
         self.optimizer = optimizer
         self.device = self.devices[0]
+        self.verbose_level = verbose_level
 
     def _clone_model(self, model, device):
         """
@@ -62,21 +63,24 @@ class Trainer:
     def _data_to_device(self, data, device):
         """
         Moves data to the specified device.
-
+    
         Args:
-            data (list of dicts or tensors): The data to move.
+            data (tensor, dict, list, or tuple): The data to move.
             device (str): The target device.
-
+    
         Returns:
-            list: The data moved to the target device.
+            The data moved to the target device, maintaining the same structure.
         """
-        for idx, item in enumerate(data):
-            if isinstance(item, dict):
-                for key in item:
-                    item[key] = item[key].to(device)
-            else:
-                data[idx] = item.to(device)
-        return data
+        if isinstance(data, torch.Tensor):
+            return data.to(device)
+        elif isinstance(data, dict):
+            return {key: self._data_to_device(value, device) for key, value in data.items()}
+        elif isinstance(data, list):
+            return [self._data_to_device(item, device) for item in data]
+        elif isinstance(data, tuple):
+            return tuple(self._data_to_device(item, device) for item in data)
+        else:
+            raise ValueError(f"Unsupported data type: {type(data)}")
 
     def create_batches(self, data_iterator):
         batches = []
@@ -143,7 +147,7 @@ class Trainer:
             wandb_wrapper.log("total_loss", total_loss)
 
             # Optionally, print progress - remove or adjust for actual use
-            if batch_idx % 10 == 0:
+            if self.verbose_level > 0 and batch_idx % 10 == 0:
                 print(f'Batch {batch_idx}: Loss {total_loss}')
 
             batch_idx += 1
@@ -216,11 +220,11 @@ class Trainer:
 
                 # Average the losses
                 total_loss = sum([loss.item() for loss in losses]) / self.num_gpus
-                
+
                 wandb_wrapper.log("total_loss", total_loss)
 
                 # Optionally, print progress
-                if batch_idx % 10 == 0:
+                if self.verbose_level > 0 and batch_idx % 10 == 0:
                     print(f'Validation Batch {batch_idx}: Loss {total_loss}')
 
                 batch_idx += 1

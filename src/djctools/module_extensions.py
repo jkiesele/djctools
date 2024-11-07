@@ -32,16 +32,19 @@ class LoggingModule(torch.nn.Module):
 
         self.switch_logging(is_logging_module)
 
-    def _log(self, metric_name, value):
+    def _log(self, metric_name, value, skip_prefix=False):
         """
         Logs a metric using the wandb wrapper.
 
         Args:
             metric_name (str): The name of the metric.
             value (float): The value of the metric.
+            skip_prefix (bool): If True, skips prefixing the metric name 
+                                with the module's name. (Default: False)
         """
         # Prefix the metric name with the module's name
-        metric_name = f"{self.name}_{metric_name}"
+        if not skip_prefix:
+            metric_name = f"{self.name}_{metric_name}"
         wandb_wrapper.log(metric_name, value)
 
     def _no_op(self, metric_name, value):

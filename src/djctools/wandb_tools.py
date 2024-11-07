@@ -144,5 +144,12 @@ class _WandbWrapper:
                 wandb.log({prefix + metric_name: value})
         self.log_buffer.clear()
 
+    def finish(self):
+        """
+        Finish the wandb run, closing the active run if one exists.
+        """
+        if self.active and self.initialized:
+            wandb.finish()
+
 # Instantiate a single instance for the package
 wandb_wrapper = _WandbWrapper()
