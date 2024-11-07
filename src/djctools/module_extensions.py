@@ -9,7 +9,7 @@ class LoggingModule(torch.nn.Module):
     submodules.
 
     Args:
-        is_logging_module (bool): Set to True to enable logging for this module.
+        logging_active (bool): Set to True to enable logging for this module.
 
     Methods:
         _log(metric_name, value): Logs a metric if logging is enabled.
@@ -20,7 +20,7 @@ class LoggingModule(torch.nn.Module):
 
     _instance_count = 0 
 
-    def __init__(self,  name=None, is_logging_module=False):
+    def __init__(self,  name=None, logging_active=False):
         super(LoggingModule, self).__init__()
 
         # Assign a unique name if none is provided
@@ -30,7 +30,7 @@ class LoggingModule(torch.nn.Module):
         else:
             self.name = name
 
-        self.switch_logging(is_logging_module)
+        self.switch_logging(logging_active)
 
     def _log(self, metric_name, value, skip_prefix=False):
         """
@@ -53,39 +53,42 @@ class LoggingModule(torch.nn.Module):
         """
         pass
 
-    def switch_logging(self, enable_logging):
+    def switch_logging(self, logging_active):
         """
         Enables or disables logging for this module and all nested submodules.
 
         Args:
-            enable_logging (bool): True to enable logging, False to disable it.
+            logging_active (bool): True to enable logging, False to disable it.
         """
-        self.is_logging_module = enable_logging
-        self.log = self._log if enable_logging else self._no_op
+        self.log = self._log if logging_active else self._no_op
         # Recursively apply to all child modules
         for child in self.children():
             if isinstance(child, LoggingModule):
-                child.switch_logging(enable_logging)
+                child.switch_logging(logging_active)
 
+    @property
+    def logging_active(self):
+        """Read-only property to access the logging state."""
+        return self.log == self._log
 
     @staticmethod
-    def switch_all_logging(module, enable_logging):
+    def switch_all_logging(module, logging_active):
         """
         Searches through a given torch.nn.Module and applies switch_logging to any
         LoggingModule submodules found, enabling or disabling logging as specified.
 
         Args:
             module (torch.nn.Module): The module to search through.
-            enable_logging (bool): True to enable logging, False to disable it.
+            logging_active (bool): True to enable logging, False to disable it.
         """
         for child in module.modules():
             if isinstance(child, LoggingModule):
-                child.switch_logging(enable_logging)
+                child.switch_logging(logging_active)
 
 
 
 class LossModule(LoggingModule):
-    def __init__(self, name=None, is_logging_module=False, is_loss_active=True):
+    def __init__(self, name=None, logging_active=False, loss_active=True):
         """
         A PyTorch module designed to compute and record individual loss terms, inheriting from LoggingModule.
         This module allows toggling loss calculation on or off for efficient handling of multiple loss terms within
@@ -95,16 +98,16 @@ class LossModule(LoggingModule):
         Attributes:
             _losses (list): An instance-level list that stores computed losses for the module, enabling
                             retrieval and aggregation of losses when needed.
-            is_loss_active (bool): A property that returns whether loss calculation is enabled or disabled.
+            loss_active (bool): A property that returns whether loss calculation is enabled or disabled.
     
         Args:
             name (str, optional): Optional name for the module. If None, a unique name will be assigned.
-            is_logging_module (bool): If True, enables logging for this module.
-            is_loss_active (bool): If True, enables loss calculation for this module. Default is True.
+            logging_active (bool): If True, enables logging for this module.
+            loss_active (bool): If True, enables loss calculation for this module. Default is True.
     
         Methods:
             forward(*args, **kwargs): Computes the loss by calling compute_loss and appends it to the instance's loss list.
-                                      This method is dynamically reassigned based on the `is_loss_active` state.
+                                      This method is dynamically reassigned based on the `loss_active` state.
             compute_loss(*args, **kwargs): Placeholder for the actual loss computation. Should be implemented in subclasses.
                                            Returns a single scalar tensor representing the loss.
             switch_loss_calculation(enable_loss): Enables or disables loss calculation, dynamically assigning forward to
@@ -115,12 +118,12 @@ class LossModule(LoggingModule):
             switch_all_losses(module, enable_loss): Recursively enables or disables loss calculation for all LossModule
                                                     instances within a given module.
         """
-        super(LossModule, self).__init__(name=name, is_logging_module=is_logging_module)
+        super(LossModule, self).__init__(name=name, logging_active=logging_active)
         self._losses = []  # Instance-level list to store losses for this LossModule
-        self.switch_loss_calculation(is_loss_active)
+        self.switch_loss_calculation(loss_active)
 
     @property
-    def is_loss_active(self):
+    def loss_active(self):
         """Read-only property to access the loss calculation state."""
         return self.forward == self._loss_op
 
@@ -145,35 +148,35 @@ class LossModule(LoggingModule):
         """
         raise NotImplementedError("Subclasses of LossModule must implement the compute_loss method.")
 
-    def switch_loss_calculation(self, enable_loss):
+    def switch_loss_calculation(self, loss_active):
         """
         Enables or disables the loss calculation for this module, dynamically setting `forward` to either
         `_loss_op` (enabled) or `_loss_no_op` (disabled) for JIT compatibility.
 
         Args:
-            enable_loss (bool): True to enable loss calculation, False to disable it.
+            loss_active (bool): True to enable loss calculation, False to disable it.
         """
-        self.forward = self._loss_op if enable_loss else self._loss_no_op
+        self.forward = self._loss_op if loss_active else self._loss_no_op
 
         # Recursively apply to all child modules
         for child in self.children():
             if isinstance(child, LossModule):
-                child.switch_loss_calculation(enable_loss)
+                child.switch_loss_calculation(loss_active)
 
 
     @staticmethod
-    def switch_all_losses(module, enable_loss):
+    def switch_all_losses(module, loss_active):
         """
         Searches through a given torch.nn.Module and applies switch_loss_calculation to any
         LossModule submodules found, enabling or disabling loss calculation as specified.
 
         Args:
             module (torch.nn.Module): The module to search through.
-            enable_loss (bool): True to enable loss calculation, False to disable it.
+            loss_active (bool): True to enable loss calculation, False to disable it.
         """
         for child in module.modules():
             if isinstance(child, LossModule):
-                child.switch_loss_calculation(enable_loss)
+                child.switch_loss_calculation(loss_active)
 
     def clear_losses(self):
         """Clears the accumulated losses in this module's instance-level loss list."""
