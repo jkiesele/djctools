@@ -6,6 +6,13 @@ from djctools.training import Trainer
 from djctools.module_extensions import LossModule
 from djctools.wandb_tools import wandb_wrapper
 
+try:
+    import djcdata
+    djcdata_available = True
+except ImportError:
+    djcdata_available = False
+
+
 
 class SimpleLossModule(LossModule):
     """A simple loss module for testing purposes, inheriting LossModule."""
@@ -19,8 +26,15 @@ class SimpleModel(torch.nn.Module):
         super(SimpleModel, self).__init__()
         self.fc = nn.Linear(10, 1)
         self.loss = SimpleLossModule(logging_active=True, name="SimpleLossModule")
+        self.triple_input = False
 
-    def forward(self, x, target):
+    def forward(self, data):
+        if not self.triple_input:
+            x, target = data['inputs'], data['targets']
+        else:
+            # this is following the TrainData_mock definition in djcdata
+            print(data)
+            x, target = data[0]["features_ragged"], data[1]["truth_ragged"]
         x = self.fc(x)
         self.loss(x, target)
         return x
@@ -52,7 +66,7 @@ class TestTrainer(unittest.TestCase):
         """Set up the model, optimizer, and trainer for each test."""
         self.model = SimpleModel()
         self.optimizer = optim.SGD(self.model.parameters(), lr=0.01)
-        self.trainer = Trainer(model=self.model, optimizer=self.optimizer, num_gpus=0, verbose_level=1)  # Use CPU for testing
+        self.trainer = Trainer(model=self.model, optimizer=self.optimizer, num_gpus=num_gpus, verbose_level=1)  # Use CPU for testing
         self.train_loader = DummyDataLoader(num_batches=5, batch_size=8)
         self.val_loader = DummyDataLoader(num_batches=3, batch_size=8)
         wandb_wrapper.activate()  # Activate wandb for testing, don't initialise the connection though
@@ -73,20 +87,24 @@ class TestTrainer(unittest.TestCase):
         self._setUp(num_gpus=1)
         """Test training loop on a single GPU or CPU."""
         self.trainer.train_loop(self.train_loader)
+        self.trainer.train_loop(self.train_loader)
 
     def test_multi_gpu_training(self):
         self._setUp(num_gpus=3)
         """Test training loop on a single GPU or CPU."""
+        self.trainer.train_loop(self.train_loader)
         self.trainer.train_loop(self.train_loader)
 
     def test_validation_loop(self):
         self._setUp(num_gpus=0)
         """Test validation loop execution and logging of validation losses."""
         self.trainer.val_loop(self.val_loader)
+        self.trainer.val_loop(self.val_loader)
 
     def test_multi_gpu_validation_loop(self):
         self._setUp(num_gpus=3)
         """Test validation loop execution and logging of validation losses."""
+        self.trainer.val_loop(self.val_loader)
         self.trainer.val_loop(self.val_loader)
 
     def test_save_and_load_model(self):
@@ -104,6 +122,19 @@ class TestTrainer(unittest.TestCase):
         # Check if weights are loaded correctly
         for param1, param2 in zip(self.model.parameters(), model2.parameters()):
             self.assertTrue(torch.equal(param1, param2))
+
+
+    #if djcdata is installed, test the data loading with DJCDataLoader
+    @unittest.skipIf(not djcdata_available, "djcdata not available")
+    def test_with_djcdata(self):
+        self._setUp(num_gpus=3)
+        #overwrite the data loaders
+        from djcdata.torch_interface import MockDJCDataLoader
+        train_loader = MockDJCDataLoader(batch_size=32)
+        self.model.triple_input = True #make the model compatible in a simple way
+
+        self.trainer.train_loop(train_loader)
+
 
     def tearDown(self):
         """Clean up any files created during testing."""

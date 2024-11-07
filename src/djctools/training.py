@@ -4,6 +4,7 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from .module_extensions import LossModule
 from .wandb_tools import wandb_wrapper
 import numpy as np
+import os
 
 class Trainer:
     """
@@ -76,6 +77,12 @@ class Trainer:
         # Initialize distributed process group
         self.num_gpus = num_gpus
         if torch.cuda.is_available() and num_gpus > 0:
+            # Set up environment for single-process DDP
+            os.environ["MASTER_ADDR"] = "localhost"
+            os.environ["MASTER_PORT"] = "12355"  # Use a unique port number
+            os.environ["WORLD_SIZE"] = "1"
+            os.environ["RANK"] = "0"
+
             dist.init_process_group(backend="nccl")
             self.device_ids = device_ids if device_ids is not None else list(range(num_gpus))
             self.device = f'cuda:{self.device_ids[0]}'
