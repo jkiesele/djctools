@@ -33,12 +33,28 @@ class MNISTLossModule(LossModule):
         # will be prepended to the metric name
         self.log("loss", loss.item())
         return loss
+    
+# define a custom LoggingModule for accuracy
+class MNISTAccuracyModule(LoggingModule):
+    def __init__(self, **kwargs):
+        super(MNISTAccuracyModule, self).__init__(**kwargs)
+        
+    def forward(self, outputs, targets):
+        _, predicted = torch.max(outputs.data, 1)
+        total = targets.size(0)
+        correct = (predicted == targets).sum().item()
+        accuracy = 100 * correct / total
+        # Log the accuracy value, the name of the module 
+        # will be prepended to the metric name
+        self.log("accuracy", accuracy)
+        return accuracy
 
 # Define the model
 class MNISTModel(nn.Module):
     def __init__(self):
         super(MNISTModel, self).__init__()
         self.loss_module = MNISTLossModule(logging_active=True, name="MNISTLossModule")
+        self.accuracy_module = MNISTAccuracyModule(logging_active=True, name="MNISTAccuracyModule")
         
         self.conv1 = nn.Conv2d(1, 32, kernel_size=3, stride=1, padding=1)
         self.relu1 = nn.ReLU()
@@ -57,6 +73,7 @@ class MNISTModel(nn.Module):
         x = x.view(-1, 32 * 14 * 14)
         outputs = self.fc1(x)
         self.loss_module(outputs, targets)
+        self.accuracy_module(outputs, targets)
         return outputs
 
 def main():
@@ -72,7 +89,7 @@ def main():
     # Hyperparameters
     # each GPU will receive a batch of 64 samples
     batch_size = 128 
-    num_epochs = 2
+    num_epochs = 5
     learning_rate = 0.001
     num_gpus = torch.cuda.device_count() if torch.cuda.is_available() else 1
     num_gpus = min(num_gpus, 3)  # Limit to 3 GPUs for testing

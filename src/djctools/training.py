@@ -9,7 +9,7 @@ from torch.nn import DataParallel
 
 from typing import Any, Dict, Optional, Sequence, Tuple, Union
 
-class CustomDataParallel(DataParallel):
+class _CustomDataParallel(DataParallel):
     def scatter(
         self,
         inputs: list,
@@ -137,7 +137,7 @@ class Trainer:
 
         # Move model to device and wrap with DDP
         model.to(self.device)
-        self.model = CustomDataParallel(model, device_ids=self.device_ids) if len(self.device_ids) > 1 else model
+        self.model = _CustomDataParallel(model, device_ids=self.device_ids) if len(self.device_ids) > 1 else model
         self.optimizer = optimizer
         self.verbose_level = verbose_level
 
