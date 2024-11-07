@@ -1,73 +1,104 @@
 import torch
-import copy
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel as DDP
 from .module_extensions import LossModule
 from .wandb_tools import wandb_wrapper
-
+import numpy as np
 
 class Trainer:
+    """
+    Trainer class for multi-GPU training using PyTorch Distributed Data Parallel (DDP).
+    
+    This Trainer class handles the initialization of DDP, manual batch distribution, 
+    and model synchronization across multiple GPUs, allowing flexibility for complex data structures 
+    and control over data loading. Compatible with both single and multi-GPU configurations, 
+    and can fall back to CPU if no GPU is available or `num_gpus=0` is specified.
+    
+    Attributes:
+        model (torch.nn.Module): The main model for training, wrapped in DDP if using multiple GPUs.
+        optimizer (torch.optim.Optimizer): The optimizer for updating model parameters.
+        num_gpus (int): Number of GPUs to use for training. Set to 0 for CPU training.
+        device_ids (list of int): List of GPU device IDs to use for training. Defaults to `[0, 1, ..., num_gpus-1]`.
+        device (str): The primary device for training, either a specified GPU or 'cpu'.
+        verbose_level (int): Controls verbosity of output, with `> 0` printing batch-wise loss updates.
+    
+    Methods:
+        _data_to_device(data, device):
+            Recursively moves data (tensors, lists, dictionaries) to the specified device.
+        
+        create_batches(data_iterator):
+            Manually creates and distributes batches across GPUs or CPU from the provided data iterator.
+    
+        train_loop(train_loader):
+            Executes the training loop over one epoch. Handles forward, backward passes, 
+            gradient updates, and logging of training losses.
+        
+        val_loop(val_loader):
+            Executes the validation loop, computing and logging validation losses. Runs without gradient updates.
+    
+        save_model(filepath):
+            Saves the model weights to a file. For DDP-wrapped models, uses `model.module.state_dict()`.
+    
+        load_model(filepath):
+            Loads model weights from a file. For DDP-wrapped models, loads weights into `model.module`.
+    
+        cleanup():
+            Cleans up the DDP process group after training. Recommended when using multiple training sessions 
+            in a single script to release GPU resources properly.
+    
+    Example Usage:
+    --------------
+    >>> model = MyModel() # The model must use LossModule to define the loss(es)
+    >>> optimizer = torch.optim.Adam(model.parameters())
+    >>> trainer = Trainer(model, optimizer, num_gpus=2, verbose_level=1)
+    
+    >>> for epoch in range(num_epochs):
+    >>>     trainer.train_loop(train_loader)
+    >>>     trainer.val_loop(val_loader)
+    
+    >>> trainer.save_model("model_weights.pth")
+    >>> trainer.cleanup()  # Call when using multi-GPU to release resources
+    
+    Notes:
+    ------
+    - The `Trainer` class assumes single-process execution. Each batch is moved manually to the correct device,
+      allowing full control over batch distribution.
+    - For DDP, the model is wrapped with `DistributedDataParallel`, which handles gradient synchronization and
+      weight updates across GPUs. Manual gradient averaging is not required.
+    - This class is optimized for cases where each batch may consist of complex nested structures 
+      (e.g., lists of dictionaries or tuples). It can be used with both standard PyTorch data loaders 
+      and custom data iterators.
+    - `DistributedDataParallel` uses `nccl` backend by default for multi-GPU setups. If running on a single GPU 
+      or CPU, DDP is bypassed, and the model is trained in a standard non-parallel setup.
+    """
     def __init__(self, model, optimizer, num_gpus=1, device_ids=None, verbose_level=0):
-        """
-        Initializes the Trainer for manual data parallelism.
-
-        Args:
-            model (torch.nn.Module): The model to train, containing LossModule instances.
-            optimizer (torch.optim.Optimizer): The optimizer for updating the model parameters.
-            num_gpus (int): The number of GPUs to use.
-            device_ids (list of int, optional): The GPU device IDs to use. If None, uses [0, 1, ..., num_gpus-1].
-        """
-        # Check CUDA availability before device initialization
-        if not torch.cuda.is_available():
-            self.device_ids = [0]
-            self.devices = ['cpu']
-            self.num_gpus = 1
-            print("Warning: CUDA is not available. Using CPU instead.")
-        else:
-            self.num_gpus = num_gpus
+        
+        # Initialize distributed process group
+        self.num_gpus = num_gpus
+        if torch.cuda.is_available() and num_gpus > 0:
+            dist.init_process_group(backend="nccl")
             self.device_ids = device_ids if device_ids is not None else list(range(num_gpus))
-            self.device_ids = self.device_ids[:num_gpus]  # Ensure the correct number of GPUs
-            self.devices = [f'cuda:{device_id}' for device_id in self.device_ids]
+            self.device = f'cuda:{self.device_ids[0]}'
+        else:
+            # Fall back to CPU if no GPU available or num_gpus is 1
+            self.device = 'cpu'
+            self.num_gpus = 0
+            print("Warning: CUDA not available or num_gpus=0. Using CPU.")
 
-        # Move the original model to the first device and create replicas for other devices
-        self.models = []
-        self.models.append(model.to(self.devices[0]))
-        # Only enable logging on the first model
-        if hasattr(self.models[0], 'switch_logging'):
-            self.models[0].switch_logging(True)
-
-        # Clone the model to other devices
-        for i in range(1, len(self.devices)):
-            model_clone = self._clone_model(self.models[0], device=self.devices[i])
-            if hasattr(model_clone, 'switch_logging'):
-                model_clone.switch_logging(False)
-            self.models.append(model_clone)
-
+        # Move model to device and wrap with DDP
+        model.to(self.device)
+        self.model = DDP(model, device_ids=self.device_ids) if self.num_gpus > 1 else model
         self.optimizer = optimizer
-        self.device = self.devices[0]
         self.verbose_level = verbose_level
-
-    def _clone_model(self, model, device):
-        """
-        Clones the model to a specified device.
-
-        Args:
-            model (torch.nn.Module): The model to clone.
-            device (str): The device to move the model to.
-
-        Returns:
-            torch.nn.Module: The cloned model on the specified device.
-        """
-        model_clone = copy.deepcopy(model)
-        model_clone = model_clone.to(device)
-        return model_clone
 
     def _data_to_device(self, data, device):
         """
         Moves data to the specified device.
-    
+
         Args:
             data (tensor, dict, list, or tuple): The data to move.
             device (str): The target device.
-    
+
         Returns:
             The data moved to the target device, maintaining the same structure.
         """
@@ -83,16 +114,26 @@ class Trainer:
             raise ValueError(f"Unsupported data type: {type(data)}")
 
     def create_batches(self, data_iterator):
+        """
+        Manually distributes data to each device by loading a batch for each device.
+
+        Args:
+            data_iterator: Iterator over the dataset.
+
+        Returns:
+            List of batches moved to each device.
+        """
         batches = []
-        # Collect batches for each device
-        for device in self.devices:
+        for i in range(self.num_gpus):
             try:
                 data = next(data_iterator)
-                data = self._data_to_device(data, device)
+                if self.num_gpus > 0:
+                    data = self._data_to_device(data, f'cuda:{self.device_ids[i]}')
+                else:
+                    data = self._data_to_device(data, 'cpu')
                 batches.append(data)
             except StopIteration:
-                # If any iterator is exhausted, end the epoch
-                return []
+                return []  # End of data
         return batches
 
     def train_loop(self, train_loader):
@@ -101,91 +142,37 @@ class Trainer:
 
         Args:
             train_loader (DataLoader): The data loader for training data.
-            epoch (int): The current epoch number.
         """
-        for model in self.models:
-            model.train()
-
+        self.model.train()
         data_iterator = iter(train_loader)
         batch_idx = 0
-        while True:
-            # Clear gradients on all models
-            self.optimizer.zero_grad()
 
+        while True:
+            self.optimizer.zero_grad()
             batches = self.create_batches(data_iterator)
             if not batches:
-                break  # done
+                break  # End of epoch
 
             losses = []
-            # Run forward and backward passes on each device
-            for data_i, model_i in zip(batches, self.models):
-                # Clear previous losses
-                LossModule.clear_all_losses(model_i)
-
-                # Forward pass
-                output = model_i(data_i)
-
-                # Collect losses from LossModule instances
-                loss = LossModule.sum_all_losses(model_i)
+            # Forward and backward pass on each device
+            for data_i in batches:
+                LossModule.clear_all_losses(self.model)
+                output = self.model(data_i)
+                loss = LossModule.sum_all_losses(self.model)
                 losses.append(loss)
 
-            # Launch backward passes asynchronously
+            # Backward and step
             for loss in losses:
                 loss.backward()
-
-            # Average gradients manually
-            self._average_gradients()
-
-            # Update optimizer on the main model
             self.optimizer.step()
 
-            # Synchronize weights to other models
-            self._synchronize_models()
-
-            total_loss = sum([loss.item() for loss in losses]) / self.num_gpus
-            #log the total loss
+            # Logging and printing
+            total_loss = np.mean([loss.item() for loss in losses]) 
             wandb_wrapper.log("total_loss", total_loss)
-
-            # Optionally, print progress - remove or adjust for actual use
             if self.verbose_level > 0 and batch_idx % 10 == 0:
                 print(f'Batch {batch_idx}: Loss {total_loss}')
-
             batch_idx += 1
-
             wandb_wrapper.flush()
-
-    def _average_gradients(self):
-        """
-        Averages gradients from all models and sets them in the main model.
-        """
-        # Get parameter lists
-        main_params = list(self.models[0].parameters())
-        other_params = [list(model.parameters()) for model in self.models[1:]]
-
-        # For each parameter in the main model
-        for idx, param in enumerate(main_params):
-            if param.grad is None:
-                continue  # Skip if no gradient
-
-            # Collect gradients from all models
-            grads = [param.grad.data.clone()]
-            for params in other_params:
-                if params[idx].grad is not None:
-                    grads.append(params[idx].grad.data)
-
-            # Average the gradients
-            avg_grad = sum(grads) / self.num_gpus
-
-            # Set the averaged gradient in the main model
-            param.grad.data = avg_grad
-
-    def _synchronize_models(self):
-        """
-        Synchronizes the weights from the main model to all other models.
-        """
-        state_dict = self.models[0].state_dict()
-        for i in range(1, self.num_gpus):
-            self.models[i].load_state_dict(state_dict)
 
     def val_loop(self, val_loader):
         """
@@ -194,59 +181,40 @@ class Trainer:
         Args:
             val_loader (DataLoader): The data loader for validation data.
         """
-        for model in self.models:
-            model.eval()
-
+        self.model.eval()
         data_iterator = iter(val_loader)
         batch_idx = 0
+
         with torch.no_grad():
             while True:
                 batches = self.create_batches(data_iterator)
                 if not batches:
-                    break  # done
+                    break  # End of data
 
                 losses = []
-                # Run forward passes on each device
-                for data_i, model_i in zip(batches, self.models):
-                    # Clear previous losses
-                    LossModule.clear_all_losses(model_i)
-
-                    # Forward pass
-                    output = model_i(data_i)
-
-                    # Collect losses from LossModule instances
-                    loss = LossModule.sum_all_losses(model_i)
+                for data_i in batches:
+                    LossModule.clear_all_losses(self.model)
+                    output = self.model(data_i)
+                    loss = LossModule.sum_all_losses(self.model)
                     losses.append(loss)
 
                 # Average the losses
-                total_loss = sum([loss.item() for loss in losses]) / self.num_gpus
-
-                wandb_wrapper.log("total_loss", total_loss)
-
-                # Optionally, print progress
+                total_loss = np.mean([loss.item() for loss in losses]) 
+                wandb_wrapper.log("val_total_loss", total_loss)
                 if self.verbose_level > 0 and batch_idx % 10 == 0:
                     print(f'Validation Batch {batch_idx}: Loss {total_loss}')
-
                 batch_idx += 1
-
                 wandb_wrapper.flush("val_")
 
     def save_model(self, filepath):
-        """
-        Saves the model weights to a file.
-
-        Args:
-            filepath (str): The path to save the model.
-        """
-        torch.save(self.models[0].state_dict(), filepath)
+        """Saves the model weights to a file."""
+        torch.save(self.model.module.state_dict() if hasattr(self.model, "module") else self.model.state_dict(), filepath)
 
     def load_model(self, filepath):
-        """
-        Loads model weights from a file.
-
-        Args:
-            filepath (str): The path to the saved model.
-        """
+        """Loads model weights from a file."""
         state_dict = torch.load(filepath)
-        self.models[0].load_state_dict(state_dict)
-        self._synchronize_models()
+        self.model.module.load_state_dict(state_dict) if hasattr(self.model, "module") else self.model.load_state_dict(state_dict)
+
+    def cleanup(self):
+        if self.num_gpus > 1:
+            dist.destroy_process_group()
