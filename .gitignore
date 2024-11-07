@@ -1,3 +1,6 @@
 venv/*
 */**/*.egg-info
 wandb/
+__pycache__/
+*.pyc
+*/**/__pycache__
