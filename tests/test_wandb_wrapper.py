@@ -1,7 +1,7 @@
 import unittest
 import os
 from djctools.wandb_tools import wandb_wrapper
-
+import torch
 
 class TestWandbWrapper(unittest.TestCase):
 
@@ -45,7 +45,7 @@ class TestWandbWrapper(unittest.TestCase):
         self.assertEqual(len(wandb_wrapper.log_buffer), 0, "Log buffer should be cleared after flush")
 
     @unittest.skipIf(
-            True or # <<< HAS TO BE ENABLED BY USER TO AVOID CI LOGGING TO WANDB
+            True or # <<< HAS TO BE ENABLED BY USER TO AVOID CI LOGGING TO WANDB - also needs cuda
         not os.path.exists(os.path.expanduser("~/private/wandb_api.sh")),
         "WANDB API key file not found, skipping live logging test."
     )
@@ -57,7 +57,14 @@ class TestWandbWrapper(unittest.TestCase):
         # Log a test metric and flush
         for i in range(10):
             wandb_wrapper.log("test_metric", 123.456-i)
+            # fill a torch tensor that resides on a different device
+            # to test if the logging is device agnostic
+            t = torch.rand(10, 10, device="cuda")
+            t = torch.sum(t) #add some possibly lazy operation
+            wandb_wrapper.log("torch_metric", t)
+
             wandb_wrapper.flush(prefix="test_")
+
 
         # Check that the log buffer is cleared after flushing
         self.assertEqual(len(wandb_wrapper.log_buffer), 0, "Log buffer should be cleared after flush")

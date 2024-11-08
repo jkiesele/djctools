@@ -1,8 +1,5 @@
 import wandb
 import torch
-
-import wandb
-import torch
 import os
 
 class _WandbWrapper:
@@ -23,6 +20,7 @@ class _WandbWrapper:
                                                    '~/private/wandb_api.sh' if not provided.
         log(metric_name, value): Buffers a metric for logging. Metrics are stored in `log_buffer` until flushed.
         flush(prefix=""): Flushes the buffered logs to wandb. Each metric name can be prefixed for easy identification.
+        finish(): Ends the wandb run, finalizing any remaining logging activities.
 
     API Key Loading:
         If the `wandb_api_key` parameter is not provided when calling `init`, this class will attempt to find
@@ -40,8 +38,6 @@ class _WandbWrapper:
         take precedence over the file.
 
     Usage Example:
-        # Instantiate the singleton
-        wandb_wrapper = _WandbWrapper()
 
         # Optionally activate logging
         wandb_wrapper.activate()
@@ -55,6 +51,9 @@ class _WandbWrapper:
 
         # Flush buffered logs to wandb
         wandb_wrapper.flush()
+        
+        # Finish the wandb session
+        wandb_wrapper.finish()
     """
 
     _instance = None  # Class-level attribute to hold the single instance
@@ -97,7 +96,7 @@ class _WandbWrapper:
             wandb to use automatically. If the file is missing or does not contain the key, a warning is displayed.
 
         Example:
-            wandb_wrapper.init(project="my_project", entity="my_entity")
+            wandb_wrapper.init(project="my_project")
         """
         if self.active and not self.initialized:
             if wandb_api_key is None:
@@ -124,10 +123,11 @@ class _WandbWrapper:
     def log(self, metric_name, value):
         """
         Buffer a metric for logging. Metrics are stored in `log_buffer` until flushed.
+        This maintains jit compatibility by avoiding direct logging calls or tensor conversions.
 
         Args:
             metric_name (str): The name of the metric.
-            value (float): The value of the metric.
+            value (float, int, or Tensor): The value of the metric. Tensors will be converted to floats/ints in `flush()`.
         """
         if self.active:
             self.log_buffer[metric_name] = value
@@ -141,6 +141,9 @@ class _WandbWrapper:
         """
         if self.active and self.initialized:
             for metric_name, value in self.log_buffer.items():
+                # Convert tensors to floats if needed before logging
+                if isinstance(value, torch.Tensor):
+                    value = value.item()
                 wandb.log({prefix + metric_name: value})
         self.log_buffer.clear()
 
