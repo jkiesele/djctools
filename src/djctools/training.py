@@ -1,7 +1,6 @@
 import torch
-import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
-from .module_extensions import LossModule
+from .module_extensions import sum_all_losses, clear_all_losses
 from .wandb_tools import wandb_wrapper
 import numpy as np
 import os
@@ -204,11 +203,11 @@ class Trainer:
                 batches = batches[0]
 
             outputs = self.model(batches)  # DataParallel handles passing data to each GPU
-            loss = LossModule.sum_all_losses(self.model)
+            loss = sum_all_losses(self.model)
 
             loss.backward()
             self.optimizer.step()
-            LossModule.clear_all_losses(self.model)
+            clear_all_losses(self.model)
 
             # Logging and printing
             wandb_wrapper.log("total_loss", loss.item())
@@ -237,8 +236,8 @@ class Trainer:
                     batches = batches[0]
     
                 outputs = self.model(batches)  # DataParallel handles passing data to each GPU
-                loss = LossModule.sum_all_losses(self.model)
-                LossModule.clear_all_losses(self.model)
+                loss = sum_all_losses(self.model)
+                clear_all_losses(self.model)
     
                 # Logging and printing
                 wandb_wrapper.log("total_loss", loss.item())
@@ -258,5 +257,4 @@ class Trainer:
         self.model.module.load_state_dict(state_dict) if hasattr(self.model, "module") else self.model.load_state_dict(state_dict)
 
     def cleanup(self):
-        if self.num_gpus > 1:
-            dist.destroy_process_group()
+        pass
