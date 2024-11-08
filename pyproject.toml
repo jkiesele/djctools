@@ -7,7 +7,7 @@ name = "djctools"
 version = "0.1.0"
 description = "A package for logging, loss management, and multi-GPU training. Follows the core ideas of DeepJetCore but in torch."
 authors = [
-    { name = "Your Name", email = "jan.kieseler@cern.ch" }
+    { name = "Jan Kieseler", email = "jan.kieseler@cern.ch" }
 ]
 license = { text = "MIT" }
 readme = "README.md"
