@@ -41,7 +41,9 @@ class MNISTLossModule(LossModule):
         loss = self.criterion(outputs, targets)
         # Log the loss value, the name of the module 
         # will be prepended to the metric name
-        self.log("loss", loss.item())
+        # note that you don't need to and should 
+        # not call .item() here.
+        self.log("loss", loss)
         return loss
     
 # define a custom LoggingModule for accuracy
