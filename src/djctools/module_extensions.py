@@ -246,7 +246,10 @@ def sum_all_losses(module : torch.nn.Module):
     Note:
         This method operates recursively across all levels of nested LossModule instances.
     """
-    device = next(module.parameters()).device
+    if hasattr(module, 'parameters') and next(module.parameters(), None) is not None:
+        device = next(module.parameters()).device
+    else:
+        device = torch.device('cpu')
     total_loss = torch.tensor(0.0, requires_grad=True).to(device)
     
     for child in module.modules():
