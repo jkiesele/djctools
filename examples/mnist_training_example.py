@@ -17,6 +17,7 @@ import torchvision.transforms as transforms
 # Import the djctools components
 from djctools.module_extensions import LossModule
 from djctools.module_extensions import LoggingModule
+from djctools.module_extensions import switch_all_logging, switch_all_losses
 from djctools.training import Trainer
 from djctools.wandb_tools import wandb_wrapper
 
@@ -28,6 +29,15 @@ class MNISTLossModule(LossModule):
         self.criterion = nn.CrossEntropyLoss()
     
     def compute_loss(self, outputs, targets):
+        '''
+        If loss is active, this function will be called.
+        If it is not active, this function will not be called at all.
+        As a result, this function can use truth information, which then does not need to be present
+        in pure inference mode without truth information without changing the model code.
+
+        In addition, individual terms can be logged separately, which is useful for debugging, 
+        using the self.log function.
+        '''
         loss = self.criterion(outputs, targets)
         # Log the loss value, the name of the module 
         # will be prepended to the metric name
@@ -39,7 +49,13 @@ class MNISTAccuracyModule(LoggingModule):
     def __init__(self, **kwargs):
         super(MNISTAccuracyModule, self).__init__(**kwargs)
         
-    def forward(self, outputs, targets):
+    def compute_metrics(self, outputs, targets):
+        '''
+        If logging is active, this function will be called.
+        If it is not active, this function will not be called at all.
+        As a result, this function can use truth information, which then does not need to be present
+        in pure inference mode without truth information without changing the model code.
+        '''
         _, predicted = torch.max(outputs.data, 1)
         total = targets.size(0)
         correct = (predicted == targets).sum().item()
@@ -47,13 +63,14 @@ class MNISTAccuracyModule(LoggingModule):
         # Log the accuracy value, the name of the module 
         # will be prepended to the metric name
         self.log("accuracy", accuracy)
-        return accuracy
 
 # Define the model
 class MNISTModel(nn.Module):
     def __init__(self):
         super(MNISTModel, self).__init__()
-        self.loss_module = MNISTLossModule(logging_active=True, name="MNISTLossModule")
+        self.loss_module = MNISTLossModule(logging_active=True, 
+                                           loss_active=True,
+                                           name="MNISTLossModule")
         self.accuracy_module = MNISTAccuracyModule(logging_active=True, name="MNISTAccuracyModule")
         
         self.conv1 = nn.Conv2d(1, 32, kernel_size=3, stride=1, padding=1)
@@ -72,8 +89,10 @@ class MNISTModel(nn.Module):
         x = self.pool(x)
         x = x.view(-1, 32 * 14 * 14)
         outputs = self.fc1(x)
+
         self.loss_module(outputs, targets)
         self.accuracy_module(outputs, targets)
+        
         return outputs
 
 def main():
@@ -122,9 +141,16 @@ def main():
         trainer.val_loop(val_loader)
     
     # turn off the losses for the model, this also applies to nested modules
-    LossModule.switch_all_losses(model, False)
+    switch_all_losses(model, False)
     # turn off all logging, this also applies to nested modules
-    LoggingModule.switch_all_logging(model, False)
+    switch_all_logging(model, False)
+
+    # now the model is in pure inference mode, that means
+    # that all truth inputs can be set to None and the model
+    # will not compute losses or log any metrics,
+    # such this this call not fail
+    mock_data = torch.randn(1, 1, 28, 28).to(device)
+    model([mock_data, None])
 
     # Save the trained model for inference
     trainer.save_model("mnist_model.pth")

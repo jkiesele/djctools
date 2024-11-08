@@ -5,8 +5,25 @@
 - Fine-grained control over logging with `LoggingModule`.
 - Modular and toggleable loss calculation with `LossModule`.
 - Efficient multi-GPU training with `Trainer`, can be used with standard torch `DataLoader` instances, and is additionally optimized for use with irregular data and custom data loaders like from `djcdata`.
+- jit-compatibility despite flexible in-model logging functionality.
 
-## Features
+## General concept
+
+To facilitate these features, the general concept is that the loss functions and metrics calculations are part of the main model (inheriting from `torch.nn.Module`).
+For example, the model could be passed the truth targets in addition to the features in training and validation mode:
+```
+m = MyModel()
+out = m([features, targets])
+```
+However, if all included `LossModule` and `LoggingModule` instances are turned off for pure inference mode without any truth information, the call would become:
+```
+out = m([features, None])
+```
+This concept allows for generic training loops, transparent GPU parallelism, and fine grained control over the logging and loss modules.
+The details on how this is implemented and should be used can be found below.
+
+
+## Detailed Features
 
 - **Singleton wandb Wrapper**: Centralized, buffered logging for `wandb`.
 - **LoggingModule**: Integrates logging into PyTorch modules with toggleable logging functionality.
@@ -16,19 +33,22 @@
 
 ---
 
+## Basic Usage Example with MNIST
+
+For the impatient, there is an example using the `Trainer` with a standard dataset like MNIST in the `examples` directory in this repository.
+
+
 ## Installation
 
-After cloning the repository, install `djctools` in editable mode:
-
 ```bash
-pip install -e .
+pip install git+https://github.com/jkiesele/djctools
 ```
 
 ### Dependencies
 
 - `torch>=1.8.0`
 - `wandb>=0.12.0`
-- `djcdata` (optional, can be installed from GitHub)
+- `djcdata` (optional, will not be installed by default, see https://github.com/jkiesele/djcdata)
 
 ---
 
@@ -106,7 +126,8 @@ class MyModel(torch.nn.Module):
         self.layer2 = LoggingModule(logging_active=False)
 
 # Toggle logging for all LoggingModule instances
-LoggingModule.switch_all_logging(MyModel(), enable_logging=True)
+model = MyModel()
+switch_all_logging(model, enable_logging=True)
 ```
 
 ---
@@ -123,8 +144,11 @@ from djctools.module_extensions import LossModule
 # Define a custom loss by subclassing LossModule
 class MyCustomLoss(LossModule):
     def compute_loss(self, predictions, targets):
+        '''
+        This function will only be called if loss is set to active. 
+        '''
         loss = torch.nn.functional.mse_loss(predictions, targets)
-        self.log("mse_loss", loss.item())
+        self.log("mse_loss", loss)
         return loss
 
 # Use the custom loss in a model
@@ -153,15 +177,23 @@ assert model.loss_layer.loss_active
 
 ### Aggregating Losses
 
-`LossModule` includes static methods to manage all losses across instances in a model:
+`module_extensions` includes static methods to manage all logging and losses across instances in a model recursively:
 
 ```python
 # Sum all losses across LossModule instances
-total_loss = LossModule.sum_all_losses(model)
+total_loss = sum_all_losses(model)
 
 # Clear losses after an optimization step
-LossModule.clear_all_losses(model)
+clear_all_losses(model)
+
+switch_all_logging(model, False) #disables all logging
+
+switch_all_losses(model, False) #disables all losses
 ```
+
+This is particularly interesting if a model should be prepared for pure inference mode, and should not depend on truth information anymore.
+If all logging and losses are turned off, and the model was configured to use truth information only in logging or loss modules, then 
+the truth information fed to the model can be None.
 
 ---
 
@@ -176,100 +208,3 @@ The `Trainer` class enables manual data parallelism, distributing computations a
 - **Gradient Averaging**: Averages gradients across GPUs before the optimization step.
 - **Model Synchronization**: Syncs model weights across GPUs after updates.
 
-### Compatibility with djcdata Data Loader
-
-The `Trainer` class is designed to work with `djcdata`, which outputs lists of dictionaries or tensors. Importantly, the list dimension does not represent the batch size but the number of inputs to the model.
-
-#### Example of djcdata Data Loader
-
-```python
-from djcdata.torch_interface import DJCDataLoader
-
-train_loader = DJCDataLoader(data_path="path/to/data", batch_size=32, shuffle=True, dict_output=True)
-```
-
-### Basic Usage Example with MNIST
-
-Here’s an example using the `Trainer` with a standard dataset like MNIST:
-
-```python
-import torch
-import torch.nn as nn
-import torch.optim as optim
-from torch.utils.data import DataLoader
-import torchvision
-import torchvision.transforms as transforms
-
-from djctools.module_extensions import LossModule
-from djctools.trainer import Trainer
-from djctools.wandb_tools import wandb_wrapper
-
-# Initialize wandb
-wandb_wrapper.init(project="mnist_trainer_example")
-
-# Define a custom LossModule
-class MNISTLossModule(LossModule):
-    def __init__(self, **kwargs):
-        super(MNISTLossModule, self).__init__(**kwargs)
-        self.criterion = nn.CrossEntropyLoss()
-    
-    def compute_loss(self, outputs, targets):
-        loss = self.criterion(outputs, targets)
-        self.log("train/loss", loss.item())
-        return loss
-
-# Define the model
-class MNISTModel(nn.Module):
-    def __init__(self):
-        super(MNISTModel, self).__init__()
-        self.loss_module = MNISTLossModule(logging_active=True, loss_active=True)
-        
-        self.conv1 = nn.Conv2d(1, 32, kernel_size=3, stride=1, padding=1)
-        self.relu1 = nn.ReLU()
-        self.pool = nn.MaxPool2d(2, 2)
-        self.fc1 = nn.Linear(32 * 14 * 14, 10)
-    
-    def forward(self, data):
-        inputs, targets = data
-        x = inputs
-        x = self.conv1(x)
-        x = self.relu1(x)
-        x = self.pool(x)
-        x = x.view(-1, 32 * 14 * 14)
-        outputs = self.fc1(x)
-        self.loss_module(outputs, targets)
-        return outputs
-
-# Training loop
-def main():
-    batch_size = 64
-    num_epochs = 2
-    learning_rate = 0.001
-    num_gpus = min(torch.cuda.device_count(), 2)
-
-    transform = transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.1307,), (0.3081,))])
-
-    train_dataset = torchvision.datasets.MNIST(root='./data', train=True, download=True, transform=transform)
-    val_dataset = torchvision.datasets.MNIST(root='./data', train=False, download=True, transform=transform)
-
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=4)
-    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=4)
-
-    model = MNISTModel()
-    optimizer = optim.Adam(model.parameters(), lr=learning_rate)
-
-    trainer = Trainer(model, optimizer, num_gpus=num_gpus)
-
-    for epoch in range(num_epochs):
-        print(f"Starting epoch {epoch+1}")
-        trainer.train_loop
-
-(train_loader)
-        trainer.validate_loop(val_loader)
-
-    trainer.save_model("mnist_model.pth")
-    wandb_wrapper.finish()
-
-if __name__ == "__main__":
-    main()
-```
