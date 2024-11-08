@@ -16,7 +16,7 @@ dependencies = [
     "numpy",
     "wandb",
     "torch",
-     "djcdata @ git+https://github.com/jkiesele/djcdata.git",  #still considering it optional
+    # "djcdata @ git+https://github.com/jkiesele/djcdata.git",  #still considering it optional
 ]
 classifiers = [
     "Programming Language :: Python :: 3",
