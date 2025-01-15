@@ -403,3 +403,17 @@ def switch_all_plotting(module: torch.nn.Module, plotting_active: bool):
         if isinstance(child, PlottingModule):
             child.switch_plotting(plotting_active)
 
+
+def flush_all_plotting(module: torch.nn.Module):
+    """
+    Searches through a given torch.nn.Module and applies flush to any
+    PlottingModule submodules found, starting the plotting process.
+    This is done recursively across all levels of nested PlottingModule instances.
+
+    Args:
+        module (torch.nn.Module): The module to search through.
+    """
+    for child in module.modules():
+        if isinstance(child, PlottingModule):
+            child.flush()
+

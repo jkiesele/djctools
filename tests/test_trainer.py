@@ -80,8 +80,8 @@ class TestTrainer(unittest.TestCase):
         self.model = SimpleModel()
         self.optimizer = optim.SGD(self.model.parameters(), lr=0.01)
         self.trainer = Trainer(model=self.model, optimizer=self.optimizer, num_gpus=num_gpus, verbose_level=1)  # Use CPU for testing
-        self.train_loader = DummyDataLoader(num_batches=500, batch_size=1024)
-        self.val_loader = DummyDataLoader(num_batches=300, batch_size=1024)
+        self.train_loader = DummyDataLoader(num_batches=500, batch_size=128)
+        self.val_loader = DummyDataLoader(num_batches=300, batch_size=128)
         wandb_wrapper.activate()  # Activate wandb for testing, don't initialise the connection though
 
     def test_initialization(self):
@@ -143,7 +143,7 @@ class TestTrainer(unittest.TestCase):
         from djcdata import TrainDataGenerator
         TrainDataGenerator.debuglevel = 3
         from djcdata.torch_interface import MockDJCDataLoader
-        train_loader = MockDJCDataLoader(batch_size=1500, dict_output=True)
+        train_loader = MockDJCDataLoader(batch_size=128, dict_output=True)
         self.model.triple_input = True #make the model compatible in a simple way
 
         self.trainer.train_loop(train_loader)

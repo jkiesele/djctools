@@ -1,6 +1,6 @@
 import torch
 from torch.nn.parallel import DistributedDataParallel as DDP
-from .module_extensions import sum_all_losses, clear_all_losses
+from .module_extensions import sum_all_losses, clear_all_losses, flush_all_plotting
 from .wandb_tools import wandb_wrapper
 import numpy as np
 import os
@@ -208,6 +208,7 @@ class Trainer:
             loss.backward()
             self.optimizer.step()
             clear_all_losses(self.model)
+            flush_all_plotting(self.model)
 
             # Logging and printing
             wandb_wrapper.log("total_loss", loss.item())
