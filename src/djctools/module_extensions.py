@@ -1,6 +1,14 @@
 from .wandb_tools import wandb_wrapper
 import torch
 
+
+import threading
+import logging
+
+# Configure logger
+logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.WARNING)  # Set the default level to WARNING
+
 class LoggingModule(torch.nn.Module):
     """
     LoggingModule integrates logging capabilities into PyTorch modules, allowing 
@@ -203,6 +211,118 @@ class LossModule(LoggingModule):
         self._losses.clear()
 
 
+
+class PlottingModule(torch.nn.Module):
+    """
+    This layer is used to enable or disable plotting from within the model.
+    It is meant as a base class from which to inherit, and should not be used directly.
+    The logic works as follows:
+      - If plotting is enabled, the forward method caches the data given to it while the model is executing. 
+        It does not return anything, and it also does not start any plotting process.
+      - If plotting is disabled, the forward method does nothing.
+      - Once the model has finished executing, the plotting process can be started by calling the flush method.
+        This method will access the cached data, and launches a new thread in which the plotting process is
+        started to avoid blocking the main thread. 
+      - The plotting thread will call the plot method, which should be implemented in the subclass.
+      - The plotting thread will terminate once the plot method has finished executing.
+      - Furthermore, it is guaranteed that there is at most one plotting thread running at any given time for one instance of this class.
+    """
+
+    _instance_count = 0 # Counter to assign unique names to instances
+
+    def __init__(self, name=None, plotting_active=False, timeout=None):
+        """
+        Args:
+            name (str): Name of the module instance, used for logging.
+            plotting_active (bool): Set to True to enable plotting for this module.
+            timeout (float, optional): Maximum time (in seconds) for the plotting thread to execute.
+        """
+        super(PlottingModule, self).__init__()
+
+        if name is None:
+            PlottingModule._instance_count += 1
+            self.name = f"PlottingModule{PlottingModule._instance_count}"
+        else:
+            self.name = name
+
+        self.plotting_active = plotting_active
+        self._cache = []
+        self._plot_thread = None
+        self._lock = threading.Lock()
+        self.timeout = timeout
+
+    def __del__(self):
+        """
+        Ensure that the plotting thread is terminated when the module is deleted.
+        """
+        self._join_plot_thread()
+
+    def switch_plotting(self, active: bool):
+        """
+        Enable or disable plotting for this module.
+        Args:
+            active (bool): Set to True to enable plotting, False to disable.
+        """
+        self.plotting_active = active
+
+    def forward(self, *args, **kwargs):
+        """
+        Cache the data if plotting is active; otherwise, do nothing.
+        """
+        if self.plotting_active:
+            self._cache.append((args, kwargs))
+
+    def flush(self):
+        """
+        Start the plotting process using cached data in a separate thread.
+        """
+        if not self.plotting_active:
+            return
+
+        if not self._cache:
+            logger.warning(f"{self.name}: flush called with no data cached despite plotting being active.")
+            return
+
+        with self._lock:
+            if self._plot_thread and self._plot_thread.is_alive():
+                logger.warning(
+                    f"{self.name}: A plotting thread is already running. "
+                    "Flush is being called too frequently or plotting takes too long. Skipping this turn."
+                )
+                self._cache = []  # Clear this cache and use the next one
+                return
+            self._join_plot_thread()
+            self._plot_thread = threading.Thread(target=self._plot_worker, daemon=True)
+            self._plot_thread.start()
+
+    def _plot_worker(self):
+        """
+        Worker method for handling the plotting logic.
+        """
+        data = self._cache
+        self._cache = []  # Clear the cache before plotting
+        self.plot(data)
+
+    def plot(self, data):
+        """
+        Override this method in the subclass to implement custom plotting logic.
+        Args:
+            data (list): Cached data to be plotted.
+        """
+        raise NotImplementedError("The 'plot' method must be implemented in subclasses.")
+
+    def _join_plot_thread(self):
+        """
+        Wait for the plotting thread to finish if it is running.
+        """
+        threadexists = self._plot_thread is not None and self._plot_thread.is_alive()
+        notself =  threading.current_thread() != self._plot_thread
+        if threadexists and notself:
+            self._plot_thread.join(timeout=self.timeout)
+            if self._plot_thread.is_alive():
+                logger.warning(f"{self.name}: Plotting thread did not finish within the timeout.")
+            self._plot_thread = None
+
 ## functions for model-wide application
 
 def switch_all_logging(module : torch.nn.Module, logging_active : bool):
@@ -268,3 +388,18 @@ def clear_all_losses(module : torch.nn.Module):
     for child in module.modules():
         if isinstance(child, LossModule):
             child.clear_losses()
+
+def switch_all_plotting(module: torch.nn.Module, plotting_active: bool):
+    """
+    Searches through a given torch.nn.Module and applies switch_plotting to any
+    PlottingModule submodules found, enabling or disabling plotting as specified.
+    This is done recursively across all levels of nested PlottingModule instances.
+
+    Args:
+        module (torch.nn.Module): The module to search through.
+        plotting_active (bool): True to enable plotting, False to disable it.
+    """
+    for child in module.modules():
+        if isinstance(child, PlottingModule):
+            child.switch_plotting(plotting_active)
+
