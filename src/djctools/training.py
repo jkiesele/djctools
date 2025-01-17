@@ -91,6 +91,21 @@ class Trainer:
         cleanup():
             Cleans up the DDP process group after training. Recommended when using multiple training sessions 
             in a single script to release GPU resources properly.
+
+        train_batch_callback(model, batch_number, batch_data):
+            Callback function that is called after each batch is processed during training.
+            The function should take the model, the batch number, and the batch data as arguments.
+            This function can be used to perform custom operations on the model or the data after each batch
+            and should be implemented by the user through inheritance. Please do not use for logging purposes,
+            use the wandb_wrapper.log() function instead.
+
+        val_batch_callback(model, batch_number, batch_data):
+            Callback function that is called after each batch is processed during validation.
+            The function should take the model, the batch number, and the batch data as arguments.
+            This function can be used to perform custom operations on the model or the data after each batch
+            and should be implemented by the user through inheritance. Please do not use for logging purposes,
+            use the wandb_wrapper.log() function instead.
+
     
     Example Usage:
     --------------
@@ -209,6 +224,7 @@ class Trainer:
             self.optimizer.step()
             clear_all_losses(self.model)
             flush_all_plotting(self.model)
+            self.train_batch_callback(self.model, batch_idx, batches)
 
             # Logging and printing
             wandb_wrapper.log("total_loss", loss.item())
@@ -239,6 +255,8 @@ class Trainer:
                 outputs = self.model(batches)  # DataParallel handles passing data to each GPU
                 loss = sum_all_losses(self.model)
                 clear_all_losses(self.model)
+                flush_all_plotting(self.model)
+                self.val_batch_callback(self.model, batch_idx, batches)
     
                 # Logging and printing
                 wandb_wrapper.log("total_loss", loss.item())
@@ -258,4 +276,10 @@ class Trainer:
         self.model.module.load_state_dict(state_dict) if hasattr(self.model, "module") else self.model.load_state_dict(state_dict)
 
     def cleanup(self):
+        pass
+
+    def train_batch_callback(self, model, batch_number, batch_data):
+        pass
+
+    def val_batch_callback(self, model, batch_number, batch_data):
         pass
