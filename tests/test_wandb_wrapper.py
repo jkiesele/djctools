@@ -38,7 +38,7 @@ class TestWandbWrapper(unittest.TestCase):
         wandb_wrapper.log("accuracy", 0.95)
         self.assertNotIn("accuracy", wandb_wrapper.log_buffer)
 
-    def no_test_flush_clears_log_buffer(self):
+    def test_flush_clears_log_buffer(self):
         """Test that flush clears the log buffer."""
         wandb_wrapper.log("accuracy", 0.95)
         wandb_wrapper.flush()

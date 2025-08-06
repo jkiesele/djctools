@@ -41,13 +41,13 @@ class _CustomDataParallel(DataParallel):
 
         for i, device_id in enumerate(device_ids):
             # Create device-specific slices of the input.
-            device_input = [ inputs[0][i] ] #wrap in one extra list as in apply_parallel the list is unpacked for some reason, so to mitigate this, we have to wrap it in another list
-            device_kwargs = kwargs
-            
-            scattered_inputs.append(device_input)  # Convert to tuple if needed by forward.
+            device_input = (inputs[0][i],)  # ensure each replica receives a tuple of inputs
+            device_kwargs = kwargs if kwargs is not None else {}
+
+            scattered_inputs.append(device_input)
             scattered_kwargs.append(device_kwargs)
-        
-        return scattered_inputs, tuple(scattered_kwargs)
+
+        return tuple(scattered_inputs), tuple(scattered_kwargs)
 
 
 

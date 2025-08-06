@@ -1,16 +1,19 @@
 # djctools
 
-`djctools` is a Python package designed to simplify logging, loss management, and multi-GPU training for deep learning models with complex, nested structures. It includes components that integrate seamlessly with PyTorch and [Weights & Biases (wandb)](https://wandb.ai/), providing tools for:
+`djctools` is a Python package designed to simplify logging, loss management, and multi-GPU training for deep learning models with complex, nested structures. It integrates seamlessly with PyTorch and [Weights & Biases (wandb)](https://wandb.ai/).
+
+Key features:
 
 - Fine-grained control over logging with `LoggingModule`.
 - Modular and toggleable loss calculation with `LossModule`.
-- Efficient multi-GPU training with `Trainer`, can be used with standard torch `DataLoader` instances, and is additionally optimized for use with irregular data and custom data loaders like from `djcdata`.
-- jit-compatibility despite flexible in-model logging functionality.
+- Efficient multi-GPU training with `Trainer` that works with standard `DataLoader` objects and irregular data from custom loaders like `djcdata`.
+- JIT compatibility despite flexible in-model logging functionality.
 
 ## General concept
 
 To facilitate these features, the general concept is that the loss functions and metrics calculations are part of the main model (inheriting from `torch.nn.Module`).
-For example, the model could be passed the truth targets in addition to the features in training and validation mode:
+For example, the model could be passed the truth targets in addition to the features in training and validation mode. The `Trainer`
+expects each batch to be a tuple or list of `(features, targets)` and forwards it unchanged to the model:
 ```
 m = MyModel()
 out = m([features, targets])
@@ -21,6 +24,40 @@ out = m([features, None])
 ```
 This concept allows for generic training loops, transparent GPU parallelism, and fine grained control over the logging and loss modules.
 The details on how this is implemented and should be used can be found below.
+
+## Quick example
+
+```python
+import torch
+from djctools.module_extensions import LossModule
+from djctools.training import Trainer
+
+class MyLoss(LossModule):
+    def compute_loss(self, pred, target):
+        loss = torch.nn.functional.mse_loss(pred, target)
+        self.log("mse", loss)
+        return loss
+
+class MyModel(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.layer = torch.nn.Linear(5, 5)
+        self.loss = MyLoss(logging_active=True)
+
+    def forward(self, batch):
+        features, targets = batch  # tuple input
+        out = self.layer(features)
+        if targets is not None:
+            self.loss(out, targets)
+        return out
+
+model = MyModel()
+optimizer = torch.optim.Adam(model.parameters())
+trainer = Trainer(model, optimizer, num_gpus=1)
+
+# each item from the loader should be (features, targets)
+trainer.train_loop(train_loader)
+```
 
 
 ## Detailed Features
@@ -207,4 +244,6 @@ The `Trainer` class enables manual data parallelism, distributing computations a
 - **Custom Data Handling**: Compatible with data loaders like `djcdata`, which return lists of dictionaries or tensors.
 - **Gradient Averaging**: Averages gradients across GPUs before the optimization step.
 - **Model Synchronization**: Syncs model weights across GPUs after updates.
+
+The trainer assumes that each batch is a `(features, targets)` tuple and that the model's forward method accepts the same structure. After each forward pass it aggregates losses from all `LossModule` instances and clears them, so logging and loss handling remain synchronized.
 
