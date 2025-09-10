@@ -1,3 +1,5 @@
+# import as djctools.wandb_tools
+
 import wandb
 import torch
 import os

@@ -1,3 +1,5 @@
+# import as djctools.module_extensions
+
 from .wandb_tools import wandb_wrapper
 import torch
 

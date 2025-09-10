@@ -1,3 +1,5 @@
+# import as from djctools.training
+
 import torch
 from torch.nn.parallel import DistributedDataParallel as DDP
 from .module_extensions import sum_all_losses, clear_all_losses, flush_all_plotting
