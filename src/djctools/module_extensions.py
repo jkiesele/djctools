@@ -214,6 +214,7 @@ class LossModule(LoggingModule):
 
 
 
+
 class PlottingModule(torch.nn.Module):
     """
     This layer is used to enable or disable plotting from within the model.
