@@ -209,49 +209,118 @@ def make_replicas(master_model: nn.Module, devices: Sequence[torch.device]) -> L
     Create one replica per device.
     Assumes master_model is already in the desired initial state.
     """
+    master_model.to('cpu')  # ensure master starts on CPU for clean copying
     replicas: List[nn.Module] = []
     for i, dev in enumerate(devices):
-        replica = copy.deepcopy(master_model)
-        replica.to(dev)
+        if i:
+            replica = copy.deepcopy(master_model)
+        else:
+            replica = master_model
         replica.train(master_model.training)
         if i > 0:
-            switch_all_logging(replica, False)
+            pass
+            #switch_all_logging(replica, False)
         replicas.append(replica)
+    
+    #move all to device
+    for replica, dev in zip(replicas, devices):
+        replica.to(dev)
+
+    sync_from_master(replicas)
+
+    # direct parameter check, no state_dict, sanity check
+    master_params = dict(replicas[0].named_parameters())
+    replica_params = dict(replicas[1].named_parameters())
+    
+    for name in master_params:
+        if not torch.equal(master_params[name].cpu(), replica_params[name].cpu()):
+            raise RuntimeError(f"Direct parameter mismatch right after make_replicas for {name}")
+    
     return replicas
 
 
+# FIXME: set to non blocking at some point, and sync at the end of the function
 @torch.no_grad()
-def sync_from_master(master: nn.Module, replicas: Sequence[nn.Module]) -> None:
+def sync_from_master_no_working(replicas: Sequence[nn.Module], blocking: bool = True) -> None:
     """
     Copy parameters and buffers from master to all other replicas.
     replicas[0] may be master itself; it is skipped.
     """
-    master_params = dict(master.named_parameters())
-    master_buffers = dict(master.named_buffers())
+    master_params = dict(replicas[0].named_parameters())
+    master_buffers = dict(replicas[0].named_buffers())
 
     for replica in replicas[1:]:
         replica_params = dict(replica.named_parameters())
         replica_buffers = dict(replica.named_buffers())
 
         for name, p in master_params.items():
-            replica_params[name].copy_(p, non_blocking=True)
+            replica_params[name].copy_(p, non_blocking =  not blocking)
+            #replica_params[name].data.copy_(p.data, non_blocking=not blocking)
+            # check if they are actually the same
+            if not torch.equal(replica_params[name].cpu(), p.cpu()): #needs to be on same device
+                raise RuntimeError(f"sync_from_master: Parameter '{name}' differs between master and replica after sync_from_master: values: {p} vs {replica_params[name]}, shapes: {p.shape} vs {replica_params[name].shape}")
 
         for name, b in master_buffers.items():
-            replica_buffers[name].copy_(b, non_blocking=True)
+            replica_buffers[name].copy_(b, non_blocking =  not blocking)
+            # check if they are actually the same
+            if not torch.equal(replica_buffers[name].cpu(), b.cpu()): #needs to be on same device
+                raise RuntimeError(f"sync_from_master: Buffer '{name}' differs between master and replica after sync_from_master: values: {b} vs {replica_buffers[name]}, shapes: {b.shape} vs {replica_buffers[name].shape}")
+            
+@torch.no_grad()
+def sync_from_master(replicas: Sequence[nn.Module]) -> None:
+    """
+    Copy parameters and buffers from master to all other replicas via CPU staging.
+    replicas[0] is the master.
+    """
+    master_params = dict(replicas[0].named_parameters())
+    master_buffers = dict(replicas[0].named_buffers())
 
+    for replica in replicas[1:]:
+        replica_params = dict(replica.named_parameters())
+        replica_buffers = dict(replica.named_buffers())
+
+        for name, p in master_params.items():
+            tmp = p.detach().cpu()
+            replica_params[name].data.copy_(tmp.to(replica_params[name].device))
+            if not torch.equal(replica_params[name].detach().cpu(), tmp):
+                raise RuntimeError(
+                    f"Parameter '{name}' differs between master and replica after sync_from_master: "
+                    f"values: {p} vs {replica_params[name]}, shapes: {p.shape} vs {replica_params[name].shape}"
+                )
+
+        for name, b in master_buffers.items():
+            tmp = b.detach().cpu()
+            replica_buffers[name].copy_(tmp.to(replica_buffers[name].device))
+            if not torch.equal(replica_buffers[name].detach().cpu(), tmp):
+                raise RuntimeError(
+                    f"Buffer '{name}' differs between master and replica after sync_from_master: "
+                    f"values: {b} vs {replica_buffers[name]}, shapes: {b.shape} vs {replica_buffers[name].shape}"
+                )
 
 @torch.no_grad()
 def check_replicas_equal(replicas: Sequence[nn.Module]) -> None:
-    master = replicas[0]
-    master_sd = master.state_dict()
+    master_params = dict(replicas[0].named_parameters())
+    master_buffers = dict(replicas[0].named_buffers())
 
     for i, replica in enumerate(replicas[1:], start=1):
-        replica_sd = replica.state_dict()
-        for key, value in master_sd.items():
-            other = replica_sd[key].to(value.device)
-            if not torch.equal(value, other):
-                raise RuntimeError(f"Replica {i} differs from master at key '{key}'")
+        replica_params = dict(replica.named_parameters())
+        replica_buffers = dict(replica.named_buffers())
 
+        for name, p in master_params.items():
+            other = replica_params[name]
+            if not torch.equal(p.detach().cpu(), other.detach().cpu()):
+                raise RuntimeError(
+                    f"Replica {i} differs from master parameter '{name}': "
+                    f"values: {p} vs {other}, shapes: {p.shape} vs {other.shape}"
+                )
+
+        for name, b in master_buffers.items():
+            other = replica_buffers[name]
+            if not torch.equal(b.detach().cpu(), other.detach().cpu()):
+                raise RuntimeError(
+                    f"Replica {i} differs from master buffer '{name}': "
+                    f"values: {b} vs {other}, shapes: {b.shape} vs {other.shape}"
+                )
 
 # ---------------------------------------------------------------------------
 # Local worker step
@@ -382,9 +451,13 @@ def train_step_threaded(
     infos = threaded_local_steps(replicas, batches, devices)
     batch_sizes = [info.batch_size for info in infos]
 
+
+    torch.cuda.synchronize()
     aggregate_grads_to_master(replicas, batch_sizes)
     master_step(optimizer)
-    sync_from_master(replicas[0], replicas)
+    torch.cuda.synchronize()
+    sync_from_master(replicas)
+    torch.cuda.synchronize()
 
     if check_sync:
         check_replicas_equal(replicas)
@@ -433,6 +506,11 @@ def example_setup(num_gpus: int = 2):
     replicas = make_replicas(master_model, devices)
     optimizer = torch.optim.Adam(replicas[0].parameters(), lr=1e-3)
 
+    # check replica sync
+    print("Checking replica synchronization... before training")
+    check_replicas_equal(replicas)
+    print("Replicas are initially synchronized.")
+
     return replicas, optimizer, devices
 
 
@@ -448,7 +526,10 @@ def example_batches(devices: Sequence[torch.device]):
 
 if __name__ == "__main__":
     replicas, optimizer, devices = example_setup(num_gpus=2)
+
     batches = example_batches(devices)
+
+    print("Stepping")
 
     infos = train_step_threaded(
         replicas=replicas,
