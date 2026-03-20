@@ -107,7 +107,7 @@ class Trainer:
         # if 'model' is a valid file path and not a torch.nn.Module, load the model from the file
         if isinstance(model, str) and os.path.isfile(model):
             print(f"Loading model from file: {model}")
-            model = torch.load(model)
+            model = torch.load(model, weights_only=False)
         elif isinstance(model, torch.nn.Module):
             pass
         else:
@@ -135,7 +135,7 @@ class Trainer:
         Args:
             filepath (str): The path to the file from which the model weights will be loaded.
         """
-        loaded_model = torch.load(filepath, map_location=self.device)
+        loaded_model = torch.load(filepath, map_location=self.device, weights_only=False)
         self.model_replicas = make_replicas(loaded_model, self.devices)
 
     @property
