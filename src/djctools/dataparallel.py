@@ -156,6 +156,7 @@ class LossModule(LoggingModule):
         This function will be called by `forward` when the loss calculation is enabled.
 
         Must return a single scalar tensor representing the loss.
+        This tensor must be a mean over the batch size, not a sum, to ensure correct scaling when aggregating losses across replicas!
 
         Raises:
             NotImplementedError: If the subclass does not override this method.
@@ -395,10 +396,17 @@ def aggregate_grads_to_master(
     - local losses correspond to sample-summed contributions
     - final desired semantics are global mean over all samples
     """
+    if len(replicas) != len(batch_sizes):
+        raise ValueError("Length of replicas and batch_sizes must match")
+    if len(replicas) == 1:
+        return # nothing to do
+    
     master = replicas[0]
     total_bs = sum(batch_sizes)
     if total_bs <= 0:
         raise RuntimeError("Total batch size must be > 0")
+
+    scalers = [bs / total_bs for bs in batch_sizes]
 
     master_params = list(master.parameters())
     replica_params = [list(m.parameters()) for m in replicas]
@@ -412,6 +420,7 @@ def aggregate_grads_to_master(
                 continue
 
             g_on_master = g.detach().cpu().to(master_p.device) #room for optimisation here if peer access is available
+            g_on_master.mul_(scalers[r_idx])
 
             if acc is None:
                 acc = g_on_master.clone()
@@ -421,7 +430,6 @@ def aggregate_grads_to_master(
         if acc is None:
             continue
 
-        acc.div_(total_bs)
         master_p.grad = acc
 
 
@@ -468,10 +476,13 @@ def train_step_threaded(
 
 class MSELossModule(LossModule):
     def compute_loss(self, pred, truth=None):
+        '''
+        to be put into the documentation: loss *must* be mean over batch size
+        '''
         if truth is None:
             return None
         # sample-summed contribution
-        return ((pred - truth) ** 2).sum()
+        return ((pred - truth) ** 2).mean()
 
 
 # ---------------------------------------------------------------------------
@@ -587,7 +598,7 @@ def run_equivalence_tests(num_steps: int = 4, atol: float = 1e-6, rtol: float = 
             _ = model(x, truth=y)
             loss = ctx.total_loss()
         if loss is not None:
-            loss = loss  / len(x)
+            loss = loss 
             loss.backward()
 
         ## print all parameters (all of them, not just max or min) before step
