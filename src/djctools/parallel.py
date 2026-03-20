@@ -17,6 +17,12 @@ def make_replicas(master_model: nn.Module, devices: Sequence[torch.device]) -> L
     """
     master_model.to('cpu')  # ensure master starts on CPU for clean copying
     replicas: List[nn.Module] = []
+
+    #check if devices exist and raise if not already here with proper error
+    for d in devices:
+        if d.type == 'cuda' and d.index >= torch.cuda.device_count():
+            raise RuntimeError(f"Device {d} is not available. Only {torch.cuda.device_count()} CUDA devices detected.")
+
     for i, dev in enumerate(devices):
         if i:
             replica = copy.deepcopy(master_model)
@@ -70,6 +76,8 @@ def sync_from_master(replicas: Sequence[nn.Module]) -> None:
     Copy parameters and buffers from master to all other replicas via CPU staging.
     replicas[0] is the master.
     """
+    if len(replicas) <= 1:
+        return # nothing to do
     master_params = dict(replicas[0].named_parameters())
     master_buffers = dict(replicas[0].named_buffers())
 
@@ -140,17 +148,12 @@ def _infer_batch_size(x: Any) -> int:
 def local_worker(model: nn.Module, batch: Tuple[Any, Any], device: torch.device) -> LocalStepInfo:
     x, y = batch
 
-    if hasattr(x, "to"):
-        x = x.to(device, non_blocking=True)
-    if y is not None and hasattr(y, "to"):
-        y = y.to(device, non_blocking=True)
-
     bs = _infer_batch_size(x)
 
     model.zero_grad(set_to_none=True)
 
     with forward_context(sample_count=bs) as ctx:
-        _ = model(x, truth=y)
+        _ = model(batch)
         loss = ctx.total_loss()
 
     if loss is not None:
@@ -189,10 +192,19 @@ def threaded_local_steps(
 # Gradient aggregation and optimizer step
 # ---------------------------------------------------------------------------
 
+
+def create_splitbatch_scalers(batch_sizes: Sequence[int]) -> List[float]:
+    total_bs = sum(batch_sizes)
+    if total_bs <= 0:
+        raise RuntimeError("Total batch size must be > 0")
+    scalers = [bs / total_bs for bs in batch_sizes]
+    return scalers
+
 @torch.no_grad()
 def aggregate_grads_to_master(
     replicas: Sequence[nn.Module],
     batch_sizes: Sequence[int],
+    scalers: Optional[Sequence[float]] = None,
 ) -> None:
     """
     Aggregate gradients from all replicas onto replicas[0].
@@ -204,14 +216,15 @@ def aggregate_grads_to_master(
     if len(replicas) != len(batch_sizes):
         raise ValueError("Length of replicas and batch_sizes must match")
     if len(replicas) == 1:
-        return # nothing to do
+        return [1.0]  # nothing to do
     
     master = replicas[0]
     total_bs = sum(batch_sizes)
     if total_bs <= 0:
         raise RuntimeError("Total batch size must be > 0")
 
-    scalers = [bs / total_bs for bs in batch_sizes]
+    if scalers is None:
+        scalers = create_splitbatch_scalers(batch_sizes)
 
     master_params = list(master.parameters())
     replica_params = [list(m.parameters()) for m in replicas]
@@ -238,13 +251,14 @@ def aggregate_grads_to_master(
         master_p.grad = acc
 
 
+
 def master_step( optimizer: torch.optim.Optimizer) -> None:
     optimizer.step()
     optimizer.zero_grad(set_to_none=True)
 
 
 # ---------------------------------------------------------------------------
-# One full multi-GPU train step
+# One full multi-GPU train step; also works for single GPU or CPU
 # ---------------------------------------------------------------------------
 
 def train_step_threaded(
@@ -257,9 +271,9 @@ def train_step_threaded(
     infos = threaded_local_steps(replicas, batches, devices)
     batch_sizes = [info.batch_size for info in infos]
 
-
+    scalers = create_splitbatch_scalers(batch_sizes)
     #torch.cuda.synchronize()
-    aggregate_grads_to_master(replicas, batch_sizes)
+    aggregate_grads_to_master(replicas, batch_sizes, scalers)
     #print master parameters
     #for name, p in replicas[0].named_parameters():
         #print(f"Before master step: {name} param value: {p.detach().cpu()}")
@@ -272,4 +286,25 @@ def train_step_threaded(
     if check_sync:
         check_replicas_equal(replicas)
 
+    #scale the info loss values accordingly
+    for info, scaler in zip(infos, scalers):
+        if info.loss_value is not None:
+            info.loss_value *= scaler
+
     return infos
+
+
+def val_step_threaded(
+    replicas: Sequence[nn.Module],
+    batches: Sequence[Tuple[Any, Any]],
+    devices: Sequence[torch.device],
+) -> List[LocalStepInfo]:
+    infos = threaded_local_steps(replicas, batches, devices)
+    batch_sizes = [info.batch_size for info in infos]
+    scalers = scalers = create_splitbatch_scalers(batch_sizes)
+    for info, scaler in zip(infos, scalers):
+        if info.loss_value is not None:
+            info.loss_value *= scaler
+
+    return infos
+

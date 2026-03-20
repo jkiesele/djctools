@@ -47,7 +47,8 @@ class ToyModel(nn.Module):
         self.linear = nn.Linear(in_features, out_features)
         self.aux_loss = MSELossModule("mse")
 
-    def forward(self, x, truth=None):
+    def forward(self, batch):
+        x, truth = batch
         pred = self.linear(x)
         self.aux_loss(pred, truth=truth)
         return pred
@@ -147,7 +148,7 @@ def run_equivalence_tests(num_steps: int = 4, atol: float = 1e-6, rtol: float = 
 
         optimizer.zero_grad(set_to_none=True)
         with forward_context(sample_count=len(x)) as ctx:
-            _ = model(x, truth=y)
+            _ = model((x,y))
             loss = ctx.total_loss()
         if loss is not None:
             loss = loss 

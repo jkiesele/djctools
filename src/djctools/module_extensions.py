@@ -373,42 +373,6 @@ def switch_all_losses(module : torch.nn.Module, loss_active : bool):
         if isinstance(child, LossModule):
             child.switch_loss_calculation(loss_active)
 
-def sum_all_losses(module : torch.nn.Module):
-    """
-    Recursively collects and sums all losses from LossModule instances within a given module.
-
-    Args:
-        module (torch.nn.Module): The module to search through.
-
-    Returns:
-        torch.Tensor: A single scalar tensor representing the sum of all accumulated losses.
-    
-    Note:
-        This method operates recursively across all levels of nested LossModule instances.
-    """
-    if hasattr(module, 'parameters') and next(module.parameters(), None) is not None:
-        device = next(module.parameters()).device
-    else:
-        device = torch.device('cpu')
-    total_loss = torch.tensor(0.0, requires_grad=True).to(device)
-    
-    for child in module.modules():
-        if isinstance(child, LossModule):
-            if child._losses:
-                total_loss = total_loss + sum([l.to(device) for l in child._losses])
-    return total_loss
-
-def clear_all_losses(module : torch.nn.Module):
-    """
-    Recursively clears all accumulated losses from LossModule instances within a given module.
-
-    Args:
-        module (torch.nn.Module): The module to search through.
-    """
-    for child in module.modules():
-        if isinstance(child, LossModule):
-            child.clear_losses()
-
 def switch_all_plotting(module: torch.nn.Module, plotting_active: bool):
     """
     Searches through a given torch.nn.Module and applies switch_plotting to any

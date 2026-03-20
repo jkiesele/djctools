@@ -1,69 +1,28 @@
 # import as from djctools.training
 
 import torch
-from torch.nn.parallel import DistributedDataParallel as DDP
-from .module_extensions import sum_all_losses, clear_all_losses, flush_all_plotting
+from .module_extensions import flush_all_plotting
 from .wandb_tools import wandb_wrapper
 import numpy as np
 import os
 from torch.nn import DataParallel
 
 from typing import Any, Dict, Optional, Sequence, Tuple, Union
-
-class _CustomDataParallel(DataParallel):
-    def scatter(
-        self,
-        inputs: list,
-        kwargs: Optional[Dict[str, Any]],
-        device_ids: Sequence[Union[int, torch.device]],
-    ) -> Any:
-        """
-        Custom scatter method that handles the input structures provided by the Trainer class,
-        such as lists of dictionaries or lists of lists of tensors.
-        
-        Args:
-            inputs (Tuple[Any, ...]): The input to be scattered - here this is a tuple with one entry. 
-                                      The latter entry is the list mentioned above.
-            kwargs (Optional[Dict[str, Any]]): Keyword arguments.
-            device_ids (Sequence[Union[int, torch.device]]): Target devices.
-
-        Returns:
-            Tuple of scattered inputs and kwargs for each device.
-        """
-        # Implement custom logic to split `inputs` and `kwargs` based on your structure.
-        # Example: if inputs is a list of dicts, scatter each dict entry to the devices.
-        
-        # Example pseudo-code:
-        scattered_inputs = []
-        scattered_kwargs = []
-        #print('inputs len',len(inputs))
-        #print('inputs types',[type(i) for i in inputs])
-        ##nested
-        #print('inputs[0]',[type(i) for i in inputs[0]])
-
-        for i, device_id in enumerate(device_ids):
-            # Create device-specific slices of the input.
-            device_input = (inputs[0][i],)  # ensure each replica receives a tuple of inputs
-            device_kwargs = kwargs if kwargs is not None else {}
-
-            scattered_inputs.append(device_input)
-            scattered_kwargs.append(device_kwargs)
-
-        return tuple(scattered_inputs), tuple(scattered_kwargs)
+from .parallel import make_replicas, check_replicas_equal, train_step_threaded, val_step_threaded
 
 
 
 class Trainer:
     """
-    Trainer class for multi-GPU training using PyTorch Distributed Data Parallel (DDP).
+    Trainer class for multi-GPU training using custom parallel utilities.
     
-    This Trainer class handles the initialization of DDP, manual batch distribution, 
+    This Trainer class handles the initialization, manual batch distribution, 
     and model synchronization across multiple GPUs, allowing flexibility for complex data structures 
     and control over data loading. Compatible with both single and multi-GPU configurations, 
     and can fall back to CPU if no GPU is available or `num_gpus=0` is specified.
     
     Attributes:
-        model (torch.nn.Module): The main model for training, wrapped in DDP if using multiple GPUs.
+        model (torch.nn.Module): The main model for training.
         optimizer (torch.optim.Optimizer): The optimizer for updating model parameters.
         num_gpus (int): Number of GPUs to use for training. Set to 0 for CPU training.
         device_ids (list of int): List of GPU device IDs to use for training. Defaults to `[0, 1, ..., num_gpus-1]`.
@@ -85,14 +44,10 @@ class Trainer:
             Executes the validation loop, computing and logging validation losses. Runs without gradient updates.
     
         save_model(filepath):
-            Saves the model weights to a file. For DDP-wrapped models, uses `model.module.state_dict()`.
+            Saves the model to a file. 
     
         load_model(filepath):
-            Loads model weights from a file. For DDP-wrapped models, loads weights into `model.module`.
-    
-        cleanup():
-            Cleans up the DDP process group after training. Recommended when using multiple training sessions 
-            in a single script to release GPU resources properly.
+            Loads model from a file. 
 
         train_batch_callback(model, batch_number, batch_data):
             Callback function that is called after each batch is processed during training.
@@ -120,19 +75,14 @@ class Trainer:
     >>>     trainer.val_loop(val_loader)
     
     >>> trainer.save_model("model_weights.pth")
-    >>> trainer.cleanup()  # Call when using multi-GPU to release resources
     
     Notes:
     ------
     - The `Trainer` class assumes single-process execution. Each batch is moved manually to the correct device,
       allowing full control over batch distribution.
-    - For DDP, the model is wrapped with `DistributedDataParallel`, which handles gradient synchronization and
-      weight updates across GPUs. Manual gradient averaging is not required.
     - This class is optimized for cases where each batch may consist of complex nested structures 
       (e.g., lists of dictionaries or tuples). It can be used with both standard PyTorch data loaders 
       and custom data iterators.
-    - `DistributedDataParallel` uses `nccl` backend by default for multi-GPU setups. If running on a single GPU 
-      or CPU, DDP is bypassed, and the model is trained in a standard non-parallel setup.
     """
     def __init__(self, model, optimizer, num_gpus=1, device_ids=None, verbose_level=0):
         
@@ -151,11 +101,53 @@ class Trainer:
             self.num_gpus = 0
             print("Warning: CUDA not available or num_gpus=0. Using CPU.")
 
-        # Move model to device and wrap with DDP
-        model.to(self.device)
-        self.model = _CustomDataParallel(model, device_ids=self.device_ids) if len(self.device_ids) > 1 else model
+        #make devices a Sequence of torch.device objects
+        self.devices = [torch.device(d) for d in self.devices]
+
+        # if 'model' is a valid file path and not a torch.nn.Module, load the model from the file
+        if isinstance(model, str) and os.path.isfile(model):
+            print(f"Loading model from file: {model}")
+            model = torch.load(model)
+        elif isinstance(model, torch.nn.Module):
+            pass
+        else:
+            raise ValueError("Model must be either a torch.nn.Module or a valid file path to a saved model.")
+        
+        print(f"Creating replicas using devices: {self.devices}")
+
+        self.model_replicas = make_replicas(model, self.devices)
         self.optimizer = optimizer
         self.verbose_level = verbose_level
+
+    def save_model(self, filepath):
+        """
+        Saves the model (not just weights) to a file. 
+
+        Args:
+            filepath (str): The path to the file where the model weights will be saved.
+        """
+        torch.save(self.model_replicas[0], filepath) #the first replica is always the master
+
+    def load_model(self, filepath):
+        """
+        Loads model from a file. slim wrapper
+
+        Args:
+            filepath (str): The path to the file from which the model weights will be loaded.
+        """
+        loaded_model = torch.load(filepath, map_location=self.device)
+        self.model_replicas = make_replicas(loaded_model, self.devices)
+
+    @property
+    def model(self):
+        """
+        Returns the master model (the first replica).
+
+        Returns:
+            torch.nn.Module: The master model.
+        """
+        return self.model_replicas[0]
+        
 
     def _data_to_device(self, data, device):
         """
@@ -206,32 +198,27 @@ class Trainer:
         Args:
             train_loader (DataLoader): The data loader for training data.
         """
-        self.model.train()
+        for r in self.model_replicas:
+            r.train()  # Set all replicas to training mode
+
+        self.optimizer.zero_grad()  # Zero gradients before starting the epoch
         data_iterator = iter(train_loader)
         batch_idx = 0
 
         while True:
-            self.optimizer.zero_grad()
             batches = self.create_batches(data_iterator)
             if not batches:
                 break  # End of epoch
 
-            if len(batches) == 1:
-                batches = batches[0]
+            info = train_step_threaded(self.model_replicas, self.optimizer, batches, self.devices, check_sync=False)
+            flush_all_plotting(self.model_replicas[0])
+            self.train_batch_callback(self.model_replicas[0], batch_idx, batches)
 
-            outputs = self.model(batches)  # DataParallel handles passing data to each GPU
-            loss = sum_all_losses(self.model)
-
-            loss.backward()
-            self.optimizer.step()
-            clear_all_losses(self.model)
-            flush_all_plotting(self.model)
-            self.train_batch_callback(self.model, batch_idx, batches)
-
+            loss = sum([i.loss_value for i in info if i.loss_value is not None])#ok, they have been scaled for this to work before
             # Logging and printing
-            wandb_wrapper.log("total_loss", loss.item())
+            wandb_wrapper.log("total_loss", loss)
             if self.verbose_level > 0 and batch_idx % 10 == 0:
-                print(f'Batch {batch_idx}: Loss {loss.item()}')
+                print(f'Batch {batch_idx}: Loss {loss}')
             batch_idx += 1
             wandb_wrapper.flush()
 
@@ -242,7 +229,8 @@ class Trainer:
         Args:
             val_loader (DataLoader): The data loader for validation data.
         """
-        self.model.eval()
+        for r in self.model_replicas:
+            r.eval()  # Set all replicas to evaluation mode
         data_iterator = iter(val_loader)
         batch_idx = 0
 
@@ -251,37 +239,36 @@ class Trainer:
                 batches = self.create_batches(data_iterator)
                 if not batches:
                     break  # End of epoch
-                if len(batches) == 1: #no multi gpu
-                    batches = batches[0]
-    
-                outputs = self.model(batches)  # DataParallel handles passing data to each GPU
-                loss = sum_all_losses(self.model)
-                clear_all_losses(self.model)
-                flush_all_plotting(self.model)
-                self.val_batch_callback(self.model, batch_idx, batches)
+                
+                info = val_step_threaded(self.model_replicas, batches, self.devices)
+                flush_all_plotting(self.model_replicas[0])
+                self.val_batch_callback(self.model_replicas[0], batch_idx, batches)
+                loss = sum([i.loss_value for i in info if i.loss_value is not None]) #ok, they have been scaled for this to work before
     
                 # Logging and printing
-                wandb_wrapper.log("total_loss", loss.item())
+                wandb_wrapper.log("total_loss", loss)
                 if self.verbose_level > 0 and batch_idx % 10 == 0:
-                    print(f'Validation Batch {batch_idx}: Loss {loss.item()}')
+                    print(f'Validation Batch {batch_idx}: Loss {loss}')
                 batch_idx += 1
                 wandb_wrapper.flush(prefix="val_")
 
 
-    def save_model(self, filepath):
-        """Saves the model weights to a file."""
-        torch.save(self.model.module.state_dict() if hasattr(self.model, "module") else self.model.state_dict(), filepath)
-
-    def load_model(self, filepath):
-        """Loads model weights from a file."""
-        state_dict = torch.load(filepath)
-        self.model.module.load_state_dict(state_dict) if hasattr(self.model, "module") else self.model.load_state_dict(state_dict)
-
-    def cleanup(self):
-        pass
-
     def train_batch_callback(self, model, batch_number, batch_data):
+        """
+        Callback function that is called after each batch is processed during training.
+        The function should take the model, the batch number, and the batch data as arguments.
+        This function can be used to perform custom operations on the model or the data after each batch
+        and should be implemented by the user through inheritance. Please do not use for logging purposes,
+        use the wandb_wrapper.log() function instead.
+        """
         pass
 
     def val_batch_callback(self, model, batch_number, batch_data):
+        """
+        Callback function that is called after each batch is processed during validation.
+        The function should take the model, the batch number, and the batch data as arguments.
+        This function can be used to perform custom operations on the model or the data after each batch
+        and should be implemented by the user through inheritance. Please do not use for logging purposes,
+        use the wandb_wrapper.log() function instead.
+        """
         pass
