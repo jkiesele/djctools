@@ -267,6 +267,7 @@ def train_step_threaded(
     batches: Sequence[Tuple[Any, Any]],
     devices: Sequence[torch.device],
     check_sync: bool = False,
+    has_cuda: bool = torch.cuda.is_available(),
 ) -> List[LocalStepInfo]:
     infos = threaded_local_steps(replicas, batches, devices)
     batch_sizes = [info.batch_size for info in infos]
@@ -281,7 +282,8 @@ def train_step_threaded(
     master_step(optimizer)
     #torch.cuda.synchronize()
     sync_from_master(replicas)
-    torch.cuda.synchronize() #check if needed
+    if has_cuda:
+        torch.cuda.synchronize() #check if needed
 
     if check_sync:
         check_replicas_equal(replicas)

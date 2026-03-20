@@ -96,12 +96,14 @@ class TestTrainer(unittest.TestCase):
         """Test training loop on a single GPU or CPU."""
         self.trainer.train_loop(self.train_loader)
 
+    @unittest.skipIf(not torch.cuda.is_available(), "CUDA not available, skipping single GPU test")
     def test_single_gpu_training(self):
         self._setUp(num_gpus=1)
         """Test training loop on a single GPU or CPU."""
         self.trainer.train_loop(self.train_loader)
         self.trainer.train_loop(self.train_loader)
 
+    @unittest.skipIf(not torch.cuda.is_available(), "CUDA not available, skipping multi GPU test")
     def test_multi_gpu_training(self):
         self._setUp(num_gpus=2)
         """Test training loop on a single GPU or CPU."""
@@ -114,6 +116,7 @@ class TestTrainer(unittest.TestCase):
         self.trainer.val_loop(self.val_loader)
         self.trainer.val_loop(self.val_loader)
 
+    @unittest.skipIf(not torch.cuda.is_available(), "CUDA not available, skipping multi GPU test")
     def test_multi_gpu_validation(self):
         self._setUp(num_gpus=2)
         """Test validation loop execution and logging of validation losses."""
@@ -157,11 +160,11 @@ class TestTrainer(unittest.TestCase):
     def test_with_djcdata_single_cpu(self):
         self.do_test_with_djcdata(0)
 
-    @unittest.skipIf(not djcdata_available, "djcdata not available")
+    @unittest.skipIf(not djcdata_available or not torch.cuda.is_available(), "djcdata or CUDA not available, skipping single GPU test")
     def test_with_djcdata_single_gpu(self):
         self.do_test_with_djcdata(1)
 
-    @unittest.skipIf(not djcdata_available, "djcdata not available")
+    @unittest.skipIf(not djcdata_available or not torch.cuda.is_available(), "djcdata or CUDA not available, skipping multi GPU test")
     def test_with_djcdata_multi_gpu(self):
         self.do_test_with_djcdata(3)
 
