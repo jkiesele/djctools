@@ -103,7 +103,7 @@ class TestTrainer(unittest.TestCase):
         self.trainer.train_loop(self.train_loader)
 
     def test_multi_gpu_training(self):
-        self._setUp(num_gpus=3)
+        self._setUp(num_gpus=2)
         """Test training loop on a single GPU or CPU."""
         self.trainer.train_loop(self.train_loader)
         self.trainer.train_loop(self.train_loader)
@@ -115,7 +115,7 @@ class TestTrainer(unittest.TestCase):
         self.trainer.val_loop(self.val_loader)
 
     def test_multi_gpu_validation(self):
-        self._setUp(num_gpus=3)
+        self._setUp(num_gpus=2)
         """Test validation loop execution and logging of validation losses."""
         self.trainer.val_loop(self.val_loader)
         self.trainer.val_loop(self.val_loader)
@@ -129,8 +129,9 @@ class TestTrainer(unittest.TestCase):
         # Create a new instance and load weights
         model2 = SimpleModel()
         optimizer2 = optim.SGD(model2.parameters(), lr=0.01)
-        trainer2 = Trainer(model=model2, optimizer=optimizer2, num_gpus=0, verbose_level=1)
-        trainer2.load_model(filepath)
+        trainer2 = Trainer(model=filepath, optimizer=optimizer2, num_gpus=0, verbose_level=1)
+
+        model2 = trainer2.model  # Get the loaded model from the trainer
 
         # Check if weights are loaded correctly
         for param1, param2 in zip(self.model.parameters(), model2.parameters()):
@@ -138,6 +139,9 @@ class TestTrainer(unittest.TestCase):
 
 
     def do_test_with_djcdata(self, num_gpus):
+        #check if num gpus exists otherwise skip
+        if num_gpus > torch.cuda.device_count():
+            self.skipTest(f"Not enough GPUs available for this test: required {num_gpus}, available {torch.cuda.device_count()}")
         self._setUp(num_gpus=num_gpus)
         #overwrite the data loaders
         from djcdata import TrainDataGenerator

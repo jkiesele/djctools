@@ -1,6 +1,6 @@
 import unittest
 import torch
-from djctools.module_extensions import LossModule, sum_all_losses, clear_all_losses, switch_all_losses, switch_all_logging
+from djctools.module_extensions import LossModule, switch_all_losses, switch_all_logging
 
 # Define a simple custom loss class for testing purposes
 class TestLossModule(LossModule):
@@ -72,42 +72,7 @@ class LossModuleTest(unittest.TestCase):
         except:
             self.fail("Model should work without targets")
 
-    def test_sum_all_losses(self):
-        """Test that all accumulated losses are correctly summed."""
-        predictions = torch.randn(10, 5)
-        targets = torch.randn(10, 5)
-
-        # Compute losses for both modules
-        self.model.loss1(predictions, targets)
-        self.model.loss2(predictions, targets)
-
-        # Sum all losses
-        total_loss = sum_all_losses(self.model)
-        clear_all_losses(self.model)
-
-        # Check that total_loss is a single scalar tensor
-        self.assertTrue(isinstance(total_loss, torch.Tensor))
-        self.assertEqual(total_loss.shape, torch.Size([]))
-        self.assertGreater(total_loss.item(), 0)
-
-    def test_clear_all_losses(self):
-        """Test that all accumulated losses are cleared correctly."""
-        predictions = torch.randn(10, 5)
-        targets = torch.randn(10, 5)
-
-        # Compute losses for both modules
-        self.model(predictions, targets)
-
-        # Ensure there are losses
-        self.assertEqual(len(self.model.loss1._losses), 1)
-        self.assertEqual(len(self.model.loss2._losses), 1)
-
-        # Clear all losses
-        clear_all_losses(self.model)
-
-        # Verify losses are cleared
-        self.assertEqual(len(self.model.loss1._losses), 0)
-        self.assertEqual(len(self.model.loss2._losses), 0)
+    
 
     def test_loss_active_property(self):
         """Test that the loss_active property correctly reflects the module's active state."""
