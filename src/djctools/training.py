@@ -204,13 +204,14 @@ class Trainer:
         self.optimizer.zero_grad()  # Zero gradients before starting the epoch
         data_iterator = iter(train_loader)
         batch_idx = 0
+        has_cuda = torch.cuda.is_available()
 
         while True:
             batches = self.create_batches(data_iterator)
             if not batches:
                 break  # End of epoch
 
-            info = train_step_threaded(self.model_replicas, self.optimizer, batches, self.devices, check_sync=False)
+            info = train_step_threaded(self.model_replicas, self.optimizer, batches, self.devices, check_sync=False, has_cuda = has_cuda)
             flush_all_plotting(self.model_replicas[0])
             self.train_batch_callback(self.model_replicas[0], batch_idx, batches)
 
