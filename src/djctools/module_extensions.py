@@ -1,11 +1,13 @@
 # import as djctools.module_extensions
 
 from .wandb_tools import wandb_wrapper
+from .threading_context import get_current_context
 import torch
 
 
 import threading
 import logging
+
 
 # Configure logger
 logger = logging.getLogger(__name__)
@@ -152,7 +154,6 @@ class LossModule(LoggingModule):
                                                     instances within a given module.
         """
         super(LossModule, self).__init__(name=name, logging_active=logging_active)
-        self._losses = []  # Instance-level list to store losses for this LossModule
         self.switch_loss_calculation(loss_active)
 
     @property
@@ -163,7 +164,22 @@ class LossModule(LoggingModule):
     def _compute_loss_and_record(self, *args, **kwargs):
         """Compute the loss and append to the instance's loss list."""
         loss = self.compute_loss(*args, **kwargs)
-        self._losses.append(loss)
+
+        if loss is None:
+            return None
+
+        ctx = get_current_context()
+        if ctx is None:
+            raise RuntimeError(
+                f"LossModule '{self.__class__.__name__}' returned a loss but no ForwardContext is active"
+            )
+
+        ctx.add_loss(loss)
+        return loss
+    
+    def _no_op(self, *args, **kwargs):
+        """A no-op function used when loss calculation is disabled."""
+        return None
 
     def compute_loss(self, *args, **kwargs):
         """
@@ -171,6 +187,7 @@ class LossModule(LoggingModule):
         This function will be called by `forward` when the loss calculation is enabled.
 
         Must return a single scalar tensor representing the loss.
+        This tensor must be a mean over the batch size, not a sum, to ensure correct scaling when aggregating losses across replicas!
 
         Raises:
             NotImplementedError: If the subclass does not override this method.
@@ -209,8 +226,8 @@ class LossModule(LoggingModule):
                 child.switch_loss_calculation(loss_active)
 
     def clear_losses(self):
-        """Clears the accumulated losses in this module's instance-level loss list."""
-        self._losses.clear()
+        raise DeprecationWarning("This method should not be used anymore and is not needed.")
+    
 
 
 
