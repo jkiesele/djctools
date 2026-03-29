@@ -146,6 +146,11 @@ def _infer_batch_size(x: Any) -> int:
 
 
 def local_worker(model: nn.Module, batch: Tuple[Any, Any], device: torch.device) -> LocalStepInfo:
+
+    # set device context explicitly to avoid multi-GPU race conditions
+    if device.type == 'cuda':
+        torch.cuda.set_device(device)
+    
     x, y = batch
 
     bs = _infer_batch_size(x)
