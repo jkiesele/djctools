@@ -161,7 +161,16 @@ class Trainer:
             The data moved to the target device, maintaining the same structure.
         """
         if isinstance(data, torch.Tensor):
-            return data.to(device)
+            target_device = torch.device(device)
+
+            #stage to CPU when moving between different GPUs to avoid potential issues, then move to target GPU
+            if (
+                data.device.type == 'cuda' and target_device.type == 'cuda' and data.device != target_device
+            ):
+                return data.detach().to('cpu').to(target_device)
+            
+            return data.to(target_device)
+
         elif isinstance(data, dict):
             return {key: self._data_to_device(value, device) for key, value in data.items()}
         elif isinstance(data, list):
