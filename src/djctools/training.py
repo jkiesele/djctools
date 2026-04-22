@@ -1,7 +1,7 @@
 # import as from djctools.training
 
 import torch
-from .module_extensions import flush_all_plotting
+from .module_extensions import flush_all_plotting, PlottingModule
 from .wandb_tools import wandb_wrapper
 import numpy as np
 import os
@@ -93,6 +93,7 @@ class Trainer:
             self.device_ids = device_ids if device_ids is not None else list(range(num_gpus))
             self.device = f'cuda:{self.device_ids[0]}'
             self.devices = [f'cuda:{device_id}' for device_id in self.device_ids]
+
         else:
             # Fall back to CPU if no GPU available or num_gpus is 1
             self.device = 'cpu'
@@ -115,9 +116,12 @@ class Trainer:
         
         print(f"Creating replicas using devices: {self.devices}")
 
+        if num_gpus > 1:
+            model = self.remove_plotting(model) #set all plotting modules to None to avoid deepcopy issues during multi-GPU training
         self.model_replicas = make_replicas(model, self.devices)
         self.optimizer = optimizer
         self.verbose_level = verbose_level
+
 
     def save_model(self, filepath):
         """
@@ -127,6 +131,7 @@ class Trainer:
             filepath (str): The path to the file where the model weights will be saved.
         """
         torch.save(self.model_replicas[0], filepath) #the first replica is always the master
+
 
     def load_model(self, filepath):
         """
@@ -282,3 +287,14 @@ class Trainer:
         use the wandb_wrapper.log() function instead.
         """
         pass
+
+    def remove_plotting(self, model):
+        """
+        Sets all plotting modules in model to None to avoid deepcopy issues during multi-GPU training.
+        """
+        print("Removing plotting modules for multi-GPU training...")
+        for name, module in model._modules.items():
+            if isinstance(module, PlottingModule):
+                model._modules[name] = None
+        
+        return model
