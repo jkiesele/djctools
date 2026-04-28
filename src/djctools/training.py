@@ -116,6 +116,7 @@ class Trainer:
         
         print(f"Creating replicas using devices: {self.devices}")
 
+        #TODO: fix plotting modules for multi-GPU training, currently just set to None
         if num_gpus > 1:
             model = self.remove_plotting(model) #set all plotting modules to None to avoid deepcopy issues during multi-GPU training
         self.model_replicas = make_replicas(model, self.devices)
@@ -291,6 +292,11 @@ class Trainer:
     def remove_plotting(self, model):
         """
         Sets all plotting modules in model to None to avoid deepcopy issues during multi-GPU training.
+        Plotting modules are not allowed to return anything from their plot function, otherwise this causes issues.
+
+        Args:
+        -----
+            model: the model from which to remove the plotting modules
         """
         print("Removing plotting modules for multi-GPU training...")
         for name, module in model._modules.items():
