@@ -236,6 +236,8 @@ class PlottingModule(torch.nn.Module):
     """
     This layer is used to enable or disable plotting from within the model.
     It is meant as a base class from which to inherit, and should not be used directly.
+    The inhereting classes must not return anythin from the plot function, otherwise issues with model saving and
+    multi-GPU training can occur!!
     The logic works as follows:
       - If plotting is enabled, the forward method caches the data given to it while the model is executing. 
         It does not return anything, and it also does not start any plotting process.
@@ -323,13 +325,14 @@ class PlottingModule(torch.nn.Module):
         self._cache = []  # Clear the cache before plotting
         self.plot(data)
 
-    def plot(self, data):
+    def plot(self, data)-> None:
         """
         Override this method in the subclass to implement custom plotting logic.
+        !!The ploting functions must not return anything, otherwise model saving and mult-GPU training will not work correctly!!
         Args:
             data (list): Cached data to be plotted.
         """
-        raise NotImplementedError("The 'plot' method must be implemented in subclasses.")
+        raise NotImplementedError("The 'plot' method must be implemented in subclasses. It is not allowed to return anything.")
 
     def _join_plot_thread(self):
         """
