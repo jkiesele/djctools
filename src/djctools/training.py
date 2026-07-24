@@ -84,7 +84,7 @@ class Trainer:
       (e.g., lists of dictionaries or tuples). It can be used with both standard PyTorch data loaders 
       and custom data iterators.
     """
-    def __init__(self, model, optimizer, num_gpus=1, device_ids=None, verbose_level=0):
+    def __init__(self, model, optimizer, num_gpus=1, device_ids=None, verbose_level=0, drop_last_batch=False):
         
         # Initialize distributed process group
         self.num_gpus = num_gpus
@@ -122,6 +122,7 @@ class Trainer:
         self.model_replicas = make_replicas(model, self.devices)
         self.optimizer = optimizer
         self.verbose_level = verbose_level
+        self.drop_last_batch = drop_last_batch
 
 
     def save_model(self, filepath):
@@ -200,10 +201,18 @@ class Trainer:
         for d in self.devices:
             try:
                 data = next(data_iterator)
-                data = self._data_to_device(data, d)
+                #data = self._data_to_device(data, d)
                 batches.append(data)
+                
             except StopIteration:
-                return []  # End of data
+                return batches  # End of data
+        return batches
+    
+    def send_batches_to_device(self, data):
+        batches = []
+        for i, batch in enumerate(data):
+            batch = self._data_to_device(batch, self.devices[i])
+            batches.append(batch)
         return batches
 
     def train_loop(self, train_loader):
@@ -218,25 +227,35 @@ class Trainer:
 
         self.optimizer.zero_grad()  # Zero gradients before starting the epoch
         data_iterator = iter(train_loader)
-        batch_idx = 0
+        self.train_batch_idx = 0
         has_cuda = torch.cuda.is_available()
+        batches = self.create_batches(data_iterator)
 
         while True:
-            batches = self.create_batches(data_iterator)
             if not batches:
-                break  # End of epoch
+                break
+            if (len(batches)< len(self.devices)):
+                break 
+            next_batches = self.create_batches(data_iterator)
+            if not next_batches and self.drop_last_batch:
+                break
+            
 
+            batches = self.send_batches_to_device(batches)
+            
             info = train_step_threaded(self.model_replicas, self.optimizer, batches, self.devices, check_sync=False, has_cuda = has_cuda)
             flush_all_plotting(self.model_replicas[0])
-            self.train_batch_callback(self.model_replicas[0], batch_idx, batches)
+            self.train_batch_callback(self.model_replicas[0], self.train_batch_idx, batches)
 
             loss = sum([i.loss_value for i in info if i.loss_value is not None])#ok, they have been scaled for this to work before
             # Logging and printing
             wandb_wrapper.log("total_loss", loss)
-            if self.verbose_level > 0 and batch_idx % 10 == 0:
-                print(f'Batch {batch_idx}: Loss {loss}')
-            batch_idx += 1
+            if self.verbose_level > 0 and self.train_batch_idx % 10 == 0:
+                print(f'Batch {self.train_batch_idx}: Loss {loss}')
+            self.train_batch_idx += 1
             wandb_wrapper.flush()
+            batches = next_batches
+            
 
     def val_loop(self, val_loader):
         """
@@ -248,24 +267,28 @@ class Trainer:
         for r in self.model_replicas:
             r.eval()  # Set all replicas to evaluation mode
         data_iterator = iter(val_loader)
-        batch_idx = 0
+        self.val_batch_idx = 0
 
         with torch.no_grad():
             while True:
                 batches = self.create_batches(data_iterator)
                 if not batches:
+                    break
+                if (len(batches)< len(self.devices)):
                     break  # End of epoch
+
+                batches = self.send_batches_to_device(batches)
                 
                 info = val_step_threaded(self.model_replicas, batches, self.devices)
                 flush_all_plotting(self.model_replicas[0])
-                self.val_batch_callback(self.model_replicas[0], batch_idx, batches)
+                self.val_batch_callback(self.model_replicas[0], self.val_batch_idx, batches)
                 loss = sum([i.loss_value for i in info if i.loss_value is not None]) #ok, they have been scaled for this to work before
     
                 # Logging and printing
                 wandb_wrapper.log("total_loss", loss)
-                if self.verbose_level > 0 and batch_idx % 10 == 0:
-                    print(f'Validation Batch {batch_idx}: Loss {loss}')
-                batch_idx += 1
+                if self.verbose_level > 0 and self.val_batch_idx % 10 == 0:
+                    print(f'Validation Batch {self.val_batch_idx}: Loss {loss}')
+                self.val_batch_idx += 1
                 wandb_wrapper.flush(prefix="val_")
 
 
@@ -304,3 +327,5 @@ class Trainer:
                 model._modules[name] = None
         
         return model
+
+

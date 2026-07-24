@@ -75,56 +75,62 @@ class TestTrainer(unittest.TestCase):
         # Teardown actions
         print("Tearing down sequential class resources")
 
-    def _setUp(self, num_gpus):
+    def _setUp(self, num_gpus, drop_last_batch):
         """Set up the model, optimizer, and trainer for each test."""
         self.model = SimpleModel()
         self.optimizer = optim.SGD(self.model.parameters(), lr=0.01)
-        self.trainer = Trainer(model=self.model, optimizer=self.optimizer, num_gpus=num_gpus, verbose_level=1)  # Use CPU for testing
+        self.trainer = Trainer(model=self.model, optimizer=self.optimizer, num_gpus=num_gpus, verbose_level=1, drop_last_batch=drop_last_batch)  # Use CPU for testing
         self.train_loader = DummyDataLoader(num_batches=500, batch_size=128)
         self.val_loader = DummyDataLoader(num_batches=300, batch_size=128)
         wandb_wrapper.activate()  # Activate wandb for testing, don't initialise the connection though
 
     def test_initialization(self):
-        self._setUp(num_gpus=0)
+        self._setUp(num_gpus=0, drop_last_batch=False)
         """Test if Trainer initializes correctly with the model and optimizer."""
         self.assertIsInstance(self.trainer.model, SimpleModel)
         self.assertIsInstance(self.trainer.optimizer, optim.SGD)
         self.assertEqual(self.trainer.num_gpus, 0)  # Should default to CPU for testing
 
     def test_single_cpu_training(self):
-        self._setUp(num_gpus=0)
+        self._setUp(num_gpus=0, drop_last_batch=False)
         """Test training loop on a single GPU or CPU."""
         self.trainer.train_loop(self.train_loader)
+        self.assertEqual(self.trainer.train_batch_idx, 500)
 
     @unittest.skipIf(not torch.cuda.is_available(), "CUDA not available, skipping single GPU test")
     def test_single_gpu_training(self):
-        self._setUp(num_gpus=1)
+        self._setUp(num_gpus=1, drop_last_batch=False)
         """Test training loop on a single GPU or CPU."""
         self.trainer.train_loop(self.train_loader)
         self.trainer.train_loop(self.train_loader)
+        self.assertEqual(self.trainer.train_batch_idx, 500)
+
 
     @unittest.skipIf(not torch.cuda.is_available(), "CUDA not available, skipping multi GPU test")
     def test_multi_gpu_training(self):
-        self._setUp(num_gpus=2)
+        self._setUp(num_gpus=2, drop_last_batch=False)
         """Test training loop on a single GPU or CPU."""
         self.trainer.train_loop(self.train_loader)
         self.trainer.train_loop(self.train_loader)
+        self.assertEqual(self.trainer.train_batch_idx, 250)
 
     def test_validation_loop(self):
-        self._setUp(num_gpus=0)
+        self._setUp(num_gpus=0, drop_last_batch=False)
         """Test validation loop execution and logging of validation losses."""
         self.trainer.val_loop(self.val_loader)
         self.trainer.val_loop(self.val_loader)
+        self.assertEqual(self.trainer.val_batch_idx, 300)
 
     @unittest.skipIf(not torch.cuda.is_available(), "CUDA not available, skipping multi GPU test")
     def test_multi_gpu_validation(self):
-        self._setUp(num_gpus=2)
+        self._setUp(num_gpus=2, drop_last_batch=False)
         """Test validation loop execution and logging of validation losses."""
         self.trainer.val_loop(self.val_loader)
         self.trainer.val_loop(self.val_loader)
+        self.assertEqual(self.trainer.val_batch_idx, 150)
 
     def test_save_and_load_model(self):
-        self._setUp(num_gpus=0)
+        self._setUp(num_gpus=0, drop_last_batch=False)
         """Test saving and loading of model weights."""
         filepath = "test_model.pth"
         self.trainer.save_model(filepath)
@@ -145,7 +151,7 @@ class TestTrainer(unittest.TestCase):
         #check if num gpus exists otherwise skip
         if num_gpus > torch.cuda.device_count():
             self.skipTest(f"Not enough GPUs available for this test: required {num_gpus}, available {torch.cuda.device_count()}")
-        self._setUp(num_gpus=num_gpus)
+        self._setUp(num_gpus=num_gpus, drop_last_batch=False)
         #overwrite the data loaders
         from djcdata import TrainDataGenerator
         TrainDataGenerator.debuglevel = 3
@@ -154,6 +160,36 @@ class TestTrainer(unittest.TestCase):
         self.model.triple_input = True #make the model compatible in a simple way
 
         self.trainer.train_loop(train_loader)
+
+    def test_initialization_drop_batch(self):
+        self._setUp(num_gpus=0, drop_last_batch=True)
+        """Test if Trainer initializes correctly with the model and optimizer with dropping last batch during training."""
+        self.assertIsInstance(self.trainer.model, SimpleModel)
+        self.assertIsInstance(self.trainer.optimizer, optim.SGD)
+        self.assertEqual(self.trainer.num_gpus, 0)  # Should default to CPU for testing
+
+    def test_single_cpu_training_drop_batch(self):
+        self._setUp(num_gpus=0, drop_last_batch=True)
+        """Test training loop on a single GPU or CPU with dropping last batch during training."""
+        self.trainer.train_loop(self.train_loader)
+        self.assertEqual(self.trainer.train_batch_idx, 499)
+
+    @unittest.skipIf(not torch.cuda.is_available(), "CUDA not available, skipping single GPU test")
+    def test_single_gpu_training_drop_batch(self):
+        self._setUp(num_gpus=1, drop_last_batch=True)
+        """Test training loop on a single GPU with dropping last batch during training."""
+        self.trainer.train_loop(self.train_loader)
+        self.trainer.train_loop(self.train_loader)
+        self.assertEqual(self.trainer.train_batch_idx, 499)
+
+    @unittest.skipIf(not torch.cuda.is_available(), "CUDA not available, skipping multi GPU test")
+    def test_multi_gpu_training_drop_batch(self):
+        self._setUp(num_gpus=2, drop_last_batch=True)
+        """Test training loop on mulitple GPU with dropping last batch during training."""
+        self.trainer.train_loop(self.train_loader)
+        self.trainer.train_loop(self.train_loader)
+        self.assertLess(self.trainer.train_batch_idx, 250)
+
 
     
     @unittest.skipIf(not djcdata_available, "djcdata not available")
